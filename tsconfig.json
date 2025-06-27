@@ -1,0 +1,11 @@
+{
+  "extends": "@tsconfig/strictest/tsconfig.json",
+  "compilerOptions": {
+    "outDir": "game/dist",
+    "rootDir": "game",
+    "module": "None",
+    "target": "ES2020"
+  },
+  "include": ["game/src/**/*"],
+  "exclude": ["node_modules", "dist", "game/dist"]
+}

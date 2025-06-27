@@ -1,0 +1,22 @@
+{
+  "name": "vibe-city-2",
+  "version": "1.0.0",
+  "description": "Land development game",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch & node server.js > log/server.log 2>&1 &",
+    "start": "npm run build && node server.js > log/server.log 2>&1 &",
+    "restart": "pkill -f 'node server.js' && npm start",
+    "test": "playwright test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@playwright/test": "^1.53.1",
+    "@tsconfig/strictest": "^2.0.5",
+    "@types/node": "^24.0.6",
+    "typescript": "^5.8.3"
+  }
+}

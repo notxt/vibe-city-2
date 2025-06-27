@@ -1,0 +1,177 @@
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap');
+
+body {
+    margin: 0;
+    padding: 0;
+    font-family: 'Orbitron', monospace;
+    background-color: #000000;
+    color: #00ff00;
+    overflow: hidden;
+    animation: scanlines 0.1s linear infinite;
+}
+
+@keyframes scanlines {
+    0% { background-position: 0 0; }
+    100% { background-position: 0 4px; }
+}
+
+body::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: repeating-linear-gradient(
+        90deg,
+        transparent,
+        transparent 2px,
+        rgba(0, 255, 0, 0.03) 2px,
+        rgba(0, 255, 0, 0.03) 4px
+    );
+    pointer-events: none;
+    z-index: 10000;
+}
+
+#game-container {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    background: radial-gradient(ellipse at center, #001100 0%, #000000 100%);
+}
+
+#three-container {
+    width: 100%;
+    height: 100%;
+    background: #000000;
+    box-shadow: inset 0 0 200px rgba(0, 255, 0, 0.1);
+}
+
+#info-box {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    width: 320px;
+    max-height: calc(100vh - 40px);
+    background-color: rgba(0, 0, 0, 0.9);
+    border: 2px solid #00ff00;
+    border-radius: 0;
+    padding: 20px;
+    box-sizing: border-box;
+    backdrop-filter: blur(2px);
+    z-index: 1000;
+    overflow-y: auto;
+    box-shadow: 
+        0 0 20px #00ff00,
+        inset 0 0 20px rgba(0, 255, 0, 0.1);
+}
+
+#info-box h3 {
+    margin: 0 0 15px 0;
+    color: #00ff00;
+    font-size: 20px;
+    font-weight: 900;
+    border-bottom: 2px solid #00ff00;
+    padding-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+}
+
+#tile-info {
+    font-size: 14px;
+    line-height: 1.6;
+    font-family: 'Orbitron', monospace;
+}
+
+#tile-info p {
+    margin: 10px 0;
+    color: #00ff00;
+}
+
+#tile-info .tile-coord {
+    font-weight: bold;
+    color: #00ffff;
+    margin-bottom: 15px;
+    font-size: 16px;
+    text-transform: uppercase;
+}
+
+#tile-info .property {
+    display: flex;
+    justify-content: space-between;
+    margin: 8px 0;
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(0, 255, 0, 0.2);
+}
+
+#tile-info .property .label {
+    color: #66ff66;
+    text-transform: uppercase;
+    font-size: 12px;
+    letter-spacing: 1px;
+}
+
+#tile-info .property .value {
+    color: #00ff00;
+    font-weight: bold;
+}
+
+#tile-info .buildable-yes {
+    color: #00ffff;
+    font-weight: bold;
+    text-transform: uppercase;
+}
+
+#tile-info .buildable-no {
+    color: #ff0080;
+    font-weight: bold;
+    text-transform: uppercase;
+}
+
+#controls {
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 2px solid #00ff00;
+}
+
+#controls h4 {
+    margin: 0 0 15px 0;
+    color: #00ffff;
+    font-size: 16px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+#controls p {
+    margin: 8px 0;
+    font-size: 12px;
+    color: #66ff66;
+}
+
+#controls strong {
+    color: #00ff00;
+    text-transform: uppercase;
+}
+
+button {
+    background-color: transparent;
+    color: #00ff00;
+    border: 2px solid #00ff00;
+    padding: 12px 24px;
+    font-size: 14px;
+    font-family: 'Orbitron', monospace;
+    font-weight: bold;
+    cursor: pointer;
+    border-radius: 0;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    transition: all 0.3s ease;
+    box-shadow: 0 0 10px rgba(0, 255, 0, 0.3);
+}
+
+button:hover {
+    background-color: #00ff00;
+    color: #000000;
+    box-shadow: 0 0 20px #00ff00;
+}
