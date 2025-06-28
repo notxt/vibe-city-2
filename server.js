@@ -25,12 +25,14 @@ const mimeTypes = {
 const server = http.createServer((req, res) => {
   let filePath;
   
-  if (req.url === '/' || req.url.endsWith('.html') || req.url.endsWith('.css')) {
-    filePath = path.join(__dirname, 'game', req.url === '/' ? 'index.html' : req.url);
+  if (req.url === '/') {
+    filePath = path.join(__dirname, 'game', 'index.html');
+  } else if (req.url.endsWith('.html') || req.url.endsWith('.css')) {
+    filePath = path.join(__dirname, 'game', req.url);
   } else if (req.url.startsWith('/dist/')) {
     filePath = path.join(__dirname, 'game', req.url);
   } else {
-    filePath = path.join(__dirname, 'game/dist/src', req.url);
+    filePath = path.join(__dirname, 'game', req.url);
   }
   
   const extname = String(path.extname(filePath)).toLowerCase();

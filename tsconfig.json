@@ -2,7 +2,7 @@
   "extends": "@tsconfig/strictest/tsconfig.json",
   "compilerOptions": {
     "outDir": "game/dist",
-    "rootDir": "game",
+    "rootDir": "game/src",
     "module": "None",
     "target": "ES2020"
   },
