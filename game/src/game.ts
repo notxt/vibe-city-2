@@ -86,6 +86,12 @@ class VibeCity {
     private waterLevel: number = 35; // Water level elevation
     private showWater: boolean = true;
     
+    // Camera acceleration
+    private cameraVelocity: Vector3 = { x: 0, y: 0, z: 0 };
+    private cameraAcceleration: number = 0.15;
+    private cameraMaxSpeed: number = 1.5;
+    private cameraDamping: number = 0.85;
+    
     constructor() {
         this.container = document.getElementById('three-container');
         this.tileInfo = document.getElementById('tile-info');
@@ -312,53 +318,73 @@ class VibeCity {
     }
     
     private updateCameraFromKeys(): void {
-        const moveSpeed = 3;
-        
         const isShiftHeld = this.keysPressed.has('shift');
         const isZHeld = this.keysPressed.has('z');
         
+        // Calculate desired acceleration based on input
+        let accelX = 0, accelY = 0, accelZ = 0;
+        
         if (isZHeld) {
             // Camera mode 3: forward/backward mode
-            if (this.keysPressed.has('arrowleft')) {
-                this.moveCamera(-moveSpeed, 0, 0);
-            }
-            if (this.keysPressed.has('arrowright')) {
-                this.moveCamera(moveSpeed, 0, 0);
-            }
-            if (this.keysPressed.has('arrowup')) {
-                this.moveCamera(0, 0, moveSpeed);
-            }
-            if (this.keysPressed.has('arrowdown')) {
-                this.moveCamera(0, 0, -moveSpeed);
-            }
+            if (this.keysPressed.has('arrowleft')) accelX -= this.cameraAcceleration;
+            if (this.keysPressed.has('arrowright')) accelX += this.cameraAcceleration;
+            if (this.keysPressed.has('arrowup')) accelZ += this.cameraAcceleration;
+            if (this.keysPressed.has('arrowdown')) accelZ -= this.cameraAcceleration;
         } else if (isShiftHeld) {
             // Camera mode 2: pan mode - pan in all directions
             if (this.keysPressed.has('arrowleft')) {
-                this.panCamera(-moveSpeed, 0);
+                this.panCamera(-this.cameraMaxSpeed * 0.7, 0);
+                return; // Pan mode doesn't use acceleration
             }
             if (this.keysPressed.has('arrowright')) {
-                this.panCamera(moveSpeed, 0);
+                this.panCamera(this.cameraMaxSpeed * 0.7, 0);
+                return;
             }
             if (this.keysPressed.has('arrowup')) {
-                this.panCamera(0, moveSpeed);
+                this.panCamera(0, this.cameraMaxSpeed * 0.7);
+                return;
             }
             if (this.keysPressed.has('arrowdown')) {
-                this.panCamera(0, -moveSpeed);
+                this.panCamera(0, -this.cameraMaxSpeed * 0.7);
+                return;
             }
         } else {
             // Camera mode 1: move mode - move camera in all directions
-            if (this.keysPressed.has('arrowleft')) {
-                this.moveCamera(-moveSpeed, 0, 0);
-            }
-            if (this.keysPressed.has('arrowright')) {
-                this.moveCamera(moveSpeed, 0, 0);
-            }
-            if (this.keysPressed.has('arrowup')) {
-                this.moveCamera(0, moveSpeed, 0);
-            }
-            if (this.keysPressed.has('arrowdown')) {
-                this.moveCamera(0, -moveSpeed, 0);
-            }
+            if (this.keysPressed.has('arrowleft')) accelX -= this.cameraAcceleration;
+            if (this.keysPressed.has('arrowright')) accelX += this.cameraAcceleration;
+            if (this.keysPressed.has('arrowup')) accelY += this.cameraAcceleration;
+            if (this.keysPressed.has('arrowdown')) accelY -= this.cameraAcceleration;
+        }
+        
+        // Update velocity with acceleration
+        this.cameraVelocity.x += accelX;
+        this.cameraVelocity.y += accelY;
+        this.cameraVelocity.z += accelZ;
+        
+        // Clamp velocity to max speed
+        const speed = Math.sqrt(
+            this.cameraVelocity.x ** 2 + 
+            this.cameraVelocity.y ** 2 + 
+            this.cameraVelocity.z ** 2
+        );
+        
+        if (speed > this.cameraMaxSpeed) {
+            const scale = this.cameraMaxSpeed / speed;
+            this.cameraVelocity.x *= scale;
+            this.cameraVelocity.y *= scale;
+            this.cameraVelocity.z *= scale;
+        }
+        
+        // Apply damping when no input
+        if (accelX === 0) this.cameraVelocity.x *= this.cameraDamping;
+        if (accelY === 0) this.cameraVelocity.y *= this.cameraDamping;
+        if (accelZ === 0) this.cameraVelocity.z *= this.cameraDamping;
+        
+        // Apply velocity to camera position
+        if (Math.abs(this.cameraVelocity.x) > 0.01 || 
+            Math.abs(this.cameraVelocity.y) > 0.01 || 
+            Math.abs(this.cameraVelocity.z) > 0.01) {
+            this.moveCamera(this.cameraVelocity.x, this.cameraVelocity.y, this.cameraVelocity.z);
         }
     }
     
