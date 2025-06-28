@@ -136,8 +136,8 @@ class VibeCity {
         this.gl.enable(this.gl.BLEND);
         this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
         
-        // Set clear color to dark purple for vaporwave aesthetic
-        this.gl.clearColor(0.1, 0.0, 0.2, 1.0);
+        // Set clear color to deeper purple/black for enhanced vaporwave aesthetic
+        this.gl.clearColor(0.05, 0.0, 0.15, 1.0);
         
         // Set viewport
         this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
@@ -170,12 +170,30 @@ class VibeCity {
             varying vec3 v_position;
             
             void main() {
-                // Simple lighting based on height
-                float lightIntensity = 0.6 + 0.4 * (v_position.y / 60.0);
+                // Enhanced vaporwave lighting effects
+                float heightFactor = v_position.y / 60.0;
                 
-                // Make water semi-transparent (blue colors)
-                float alpha = v_color.b > 0.8 ? 0.6 : 1.0;
-                gl_FragColor = vec4(v_color * lightIntensity, alpha);
+                // Create multiple lighting layers for vaporwave effect
+                float baseLight = 0.4 + 0.6 * heightFactor;
+                float rimLight = pow(1.0 - abs(heightFactor - 0.5) * 2.0, 3.0) * 0.8;
+                float gradientLight = sin(v_position.y * 0.1) * 0.3 + 0.7;
+                
+                // Combine lighting effects
+                float totalLight = baseLight + rimLight + gradientLight;
+                totalLight = clamp(totalLight, 0.3, 2.0);
+                
+                // Add subtle color variation based on position
+                vec3 colorShift = vec3(
+                    sin(v_position.y * 0.05) * 0.1,
+                    0.0,
+                    cos(v_position.y * 0.05) * 0.1
+                );
+                
+                vec3 finalColor = (v_color + colorShift) * totalLight;
+                
+                // Make water semi-transparent, terrain opaque
+                float alpha = v_color.b > 0.8 ? 0.7 : 1.0;
+                gl_FragColor = vec4(finalColor, alpha);
             }
         `;
         
@@ -534,11 +552,22 @@ class VibeCity {
     private updateTerrainFromHeightmap(): void {
         // Convert heightmap to terrain tiles
         this.terrain = [];
+        let minElevation = Infinity;
+        let maxElevation = -Infinity;
+        
         for (let y = 0; y < this.mapSize; y++) {
             this.terrain[y] = [];
             for (let x = 0; x < this.mapSize; x++) {
-                this.terrain[y]![x] = this.createTileFromHeight(x, y, this.heightmap[y]![x]!);
+                const elevation = this.heightmap[y]![x]!;
+                minElevation = Math.min(minElevation, elevation);
+                maxElevation = Math.max(maxElevation, elevation);
+                this.terrain[y]![x] = this.createTileFromHeight(x, y, elevation);
             }
+        }
+        
+        // Log elevation range every few steps
+        if (this.simulationStep % 10 === 0) {
+            console.log(`Step ${this.simulationStep}: Elevation range ${minElevation.toFixed(1)} - ${maxElevation.toFixed(1)}`);
         }
         
         // Update the mesh
@@ -598,16 +627,16 @@ class VibeCity {
     }*/
     
     private applyTectonicUplift(heightmap: number[][], intensity: number): void {
-        // Create scattered hill centers for more natural terrain
+        // Create scattered hill centers with higher peaks for magenta colors
         const hillCenters = [
-            { x: 12, y: 15, strength: 0.8 },
-            { x: 35, y: 8, strength: 0.6 },
-            { x: 28, y: 25, strength: 0.7 },
-            { x: 8, y: 35, strength: 0.5 },
-            { x: 42, y: 32, strength: 0.6 },
-            { x: 20, y: 40, strength: 0.4 },
-            { x: 38, y: 18, strength: 0.5 },
-            { x: 15, y: 28, strength: 0.3 },
+            { x: 12, y: 15, strength: 1.2 },
+            { x: 35, y: 8, strength: 1.0 },
+            { x: 28, y: 25, strength: 1.1 },
+            { x: 8, y: 35, strength: 0.8 },
+            { x: 42, y: 32, strength: 1.0 },
+            { x: 20, y: 40, strength: 0.7 },
+            { x: 38, y: 18, strength: 0.9 },
+            { x: 15, y: 28, strength: 0.6 },
         ];
         
         for (let y = 2; y < this.mapSize - 2; y++) {
@@ -622,7 +651,7 @@ class VibeCity {
                     if (distance < maxRadius) {
                         // Gaussian-like falloff for natural hill shape
                         const falloff = Math.exp(-(distance * distance) / (2 * (maxRadius / 3) ** 2));
-                        totalUplift += hill.strength * falloff * intensity * 0.3;
+                        totalUplift += hill.strength * falloff * intensity * 0.5;
                     }
                 }
                 
@@ -634,11 +663,11 @@ class VibeCity {
     }
     
     private applyHydraulicErosion(heightmap: number[][]): void {
-        const erosionRate = 0.8; // Increased from 0.3 for stronger erosion
-        const sedimentCapacity = 3.0; // Increased capacity for more sediment transport
+        const erosionRate = 0.4; // Reduced to preserve peaks for magenta colors
+        const sedimentCapacity = 2.0; // Reduced to preserve height variation
         
-        // Simulate more intense rainfall with more water drops
-        for (let drop = 0; drop < this.mapSize * 4; drop++) {
+        // Simulate moderate rainfall to maintain peak heights
+        for (let drop = 0; drop < this.mapSize * 2; drop++) {
             let x = Math.floor(Math.random() * this.mapSize);
             let y = Math.floor(Math.random() * this.mapSize);
             let sediment = 0;
@@ -694,7 +723,7 @@ class VibeCity {
     
     private applyThermalErosion(heightmap: number[][]): void {
         const maxSlope = 0.5; // Maximum stable slope
-        const erosionRate = 0.1;
+        const erosionRate = 0.05; // Reduced to preserve sharp peaks
         
         for (let y = 2; y < this.mapSize - 2; y++) {
             for (let x = 2; x < this.mapSize - 2; x++) {
@@ -798,8 +827,25 @@ class VibeCity {
                         y - this.mapSize / 2
                     );
                     
-                    // Neon green for vaporwave aesthetic
-                    colors.push(0.0, 1.0, 0.0); // Bright neon green
+                    // Enhanced wireframe vaporwave colors
+                    const elevation = tile.geology.elevation;
+                    
+                    if (elevation < 25) {
+                        // Low areas: Bright cyan
+                        colors.push(0.0, 1.0, 1.0);
+                    } else if (elevation < 35) {
+                        // Water level: Electric blue
+                        colors.push(0.0, 0.7, 1.0);
+                    } else if (elevation < 45) {
+                        // Mid areas: Bright neon green
+                        colors.push(0.0, 1.0, 0.0);
+                    } else if (elevation < 55) {
+                        // Higher areas: Electric yellow-green
+                        colors.push(0.5, 1.0, 0.0);
+                    } else {
+                        // Peak areas: Hot pink/magenta (lowered threshold)
+                        colors.push(1.0, 0.0, 1.0);
+                    }
                 }
             }
         }
@@ -1107,8 +1153,8 @@ class VibeCity {
         this.gl.bindBuffer(this.gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
         const indexCount = (this.mapSize - 1) * (this.mapSize - 1) * 6;
         
-        // Draw wireframe lines only
-        this.gl.lineWidth(2.0);
+        // Draw enhanced wireframe with thick lines for vaporwave aesthetic
+        this.gl.lineWidth(2.5);
         for (let i = 0; i < indexCount; i += 3) {
             this.gl.drawElements(this.gl.LINE_LOOP, 3, this.gl.UNSIGNED_SHORT, i * 2);
         }
