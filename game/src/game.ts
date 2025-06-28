@@ -58,12 +58,12 @@ class VibeCity {
     private contourColorBuffer: WebGLBuffer | null = null;
     
     private mapSize: number = 100;
-    private heightScale: number = 0.8; // Very gentle height variations for overview
+    private heightScale: number = 1.0; // Gentle terrain suitable for city building
     
     // Camera and interaction - Wide landscape overview
-    private cameraPosition: Vector3 = { x: 120, y: 100, z: 120 };
-    private cameraTarget: Vector3 = { x: 0, y: 8, z: 0 }; // Look at center terrain height
-    private cameraDistance: number = 200;
+    private cameraPosition: Vector3 = { x: 120, y: 150, z: 120 };
+    private cameraTarget: Vector3 = { x: 0, y: 60, z: 0 }; // Look at center terrain height (geological scale)
+    private cameraDistance: number = 250;
     
     // FPS tracking
     private lastTime: number = 0;
@@ -111,8 +111,12 @@ class VibeCity {
         this.gl.enable(this.gl.DEPTH_TEST);
         this.gl.enable(this.gl.CULL_FACE);
         
-        // Set clear color to black for 80's arcade look
-        this.gl.clearColor(0.0, 0.0, 0.0, 1.0);
+        // Enable blending for transparency
+        this.gl.enable(this.gl.BLEND);
+        this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
+        
+        // Set clear color to dark purple for vaporwave aesthetic
+        this.gl.clearColor(0.1, 0.0, 0.2, 1.0);
         
         // Set viewport
         this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
@@ -426,7 +430,7 @@ class VibeCity {
     private startGame(): void {
         this.generateTerrain();
         this.createTerrainMesh();
-        this.createContourLines();
+        // Contour lines disabled for cleaner vaporwave look
         this.setupIsometricView();
         this.animate();
         
@@ -444,24 +448,151 @@ class VibeCity {
     }
     
     private generateTerrain(): void {
-        this.terrain = [];
+        // Initialize heightmap for geological simulation
+        const heightmap: number[][] = [];
         
+        // Initialize with random noise and some initial uplift
+        for (let y = 0; y < this.mapSize; y++) {
+            heightmap[y] = [];
+            for (let x = 0; x < this.mapSize; x++) {
+                // Initial random terrain with some structure
+                const noise = Math.random() * 10;
+                const uplift = Math.sin(x * 0.02) * Math.cos(y * 0.02) * 20;
+                heightmap[y]![x] = 50 + noise + uplift;
+            }
+        }
+        
+        // Apply geological processes
+        this.simulateGeologicalForces(heightmap);
+        
+        // Convert heightmap to terrain tiles
+        this.terrain = [];
         for (let y = 0; y < this.mapSize; y++) {
             this.terrain[y] = [];
             for (let x = 0; x < this.mapSize; x++) {
-                this.terrain[y]![x] = this.generateTile(x, y);
+                this.terrain[y]![x] = this.createTileFromHeight(x, y, heightmap[y]![x]!);
             }
         }
     }
     
-    private generateTile(x: number, y: number): TerrainTile {
-        // Enhanced noise for better 3D terrain
-        const scale = 0.02;
-        const elevation = Math.abs(
-            Math.sin(x * scale) * Math.cos(y * scale) +
-            Math.sin(x * scale * 2) * Math.cos(y * scale * 2) * 0.5 +
-            Math.sin(x * scale * 4) * Math.cos(y * scale * 4) * 0.25
-        ) * 50 + 10; // 10-60 meter range
+    private simulateGeologicalForces(heightmap: number[][]): void {
+        const iterations = 50; // Number of geological time steps
+        
+        for (let i = 0; i < iterations; i++) {
+            // Apply tectonic uplift (decreasing over time)
+            this.applyTectonicUplift(heightmap, 1.0 - (i / iterations));
+            
+            // Apply hydraulic erosion (water flow)
+            this.applyHydraulicErosion(heightmap);
+            
+            // Apply thermal erosion (weathering/slope stabilization)
+            this.applyThermalErosion(heightmap);
+        }
+    }
+    
+    private applyTectonicUplift(heightmap: number[][], intensity: number): void {
+        // Simulate tectonic forces creating hills and ridges
+        for (let y = 1; y < this.mapSize - 1; y++) {
+            for (let x = 1; x < this.mapSize - 1; x++) {
+                // Create some uplift patterns
+                const upliftNoise = Math.sin(x * 0.03) * Math.cos(y * 0.025) * intensity * 0.5;
+                heightmap[y]![x]! += upliftNoise;
+            }
+        }
+    }
+    
+    private applyHydraulicErosion(heightmap: number[][]): void {
+        const erosionRate = 0.3;
+        const sedimentCapacity = 2.0;
+        
+        // Simulate water drops flowing downhill
+        for (let drop = 0; drop < this.mapSize * 2; drop++) {
+            let x = Math.floor(Math.random() * this.mapSize);
+            let y = Math.floor(Math.random() * this.mapSize);
+            let sediment = 0;
+            
+            // Follow water flow for several steps
+            for (let step = 0; step < 30; step++) {
+                if (x <= 0 || x >= this.mapSize - 1 || y <= 0 || y >= this.mapSize - 1) break;
+                
+                // Find steepest descent direction
+                let steepestGradient = 0;
+                let nextX = x, nextY = y;
+                
+                for (let dx = -1; dx <= 1; dx++) {
+                    for (let dy = -1; dy <= 1; dy++) {
+                        if (dx === 0 && dy === 0) continue;
+                        const nx = x + dx;
+                        const ny = y + dy;
+                        if (nx >= 0 && nx < this.mapSize && ny >= 0 && ny < this.mapSize) {
+                            const gradient = heightmap[y]![x]! - heightmap[ny]![nx]!;
+                            if (gradient > steepestGradient) {
+                                steepestGradient = gradient;
+                                nextX = nx;
+                                nextY = ny;
+                            }
+                        }
+                    }
+                }
+                
+                // If no downhill direction, deposit sediment and stop
+                if (steepestGradient <= 0) {
+                    heightmap[y]![x]! += sediment;
+                    break;
+                }
+                
+                // Erode current position
+                const erosion = Math.min(steepestGradient * erosionRate, 1.0);
+                heightmap[y]![x]! -= erosion;
+                sediment += erosion;
+                
+                // Drop excess sediment if carrying too much
+                if (sediment > sedimentCapacity) {
+                    const deposit = sediment - sedimentCapacity;
+                    heightmap[y]![x]! += deposit;
+                    sediment = sedimentCapacity;
+                }
+                
+                // Move to next position
+                x = nextX;
+                y = nextY;
+            }
+        }
+    }
+    
+    private applyThermalErosion(heightmap: number[][]): void {
+        const maxSlope = 0.5; // Maximum stable slope
+        const erosionRate = 0.1;
+        
+        for (let y = 1; y < this.mapSize - 1; y++) {
+            for (let x = 1; x < this.mapSize - 1; x++) {
+                const currentHeight = heightmap[y]![x]!;
+                
+                // Check all neighbors
+                for (let dx = -1; dx <= 1; dx++) {
+                    for (let dy = -1; dy <= 1; dy++) {
+                        if (dx === 0 && dy === 0) continue;
+                        
+                        const nx = x + dx;
+                        const ny = y + dy;
+                        const neighborHeight = heightmap[ny]![nx]!;
+                        
+                        const heightDiff = currentHeight - neighborHeight;
+                        if (heightDiff > maxSlope) {
+                            // Redistribute material to make slope more stable
+                            const transfer = (heightDiff - maxSlope) * erosionRate;
+                            heightmap[y]![x]! -= transfer;
+                            heightmap[ny]![nx]! += transfer;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    private createTileFromHeight(x: number, y: number, elevation: number): TerrainTile {
+        // Clamp elevation to reasonable range
+        elevation = Math.max(5, Math.min(150, elevation));
         
         const waterTableNoise = Math.sin(x * 0.01) * Math.cos(y * 0.01);
         const soilNoise = Math.sin(x * 0.03) * Math.sin(y * 0.04);
@@ -518,9 +649,8 @@ class VibeCity {
                         y - this.mapSize / 2
                     );
                     
-                    // Color based on soil type
-                    const color = this.getSoilColor(tile.geology.soilType);
-                    colors.push(color.r, color.g, color.b);
+                    // Neon green for vaporwave aesthetic
+                    colors.push(0.0, 1.0, 0.0); // Bright neon green
                 }
             }
         }
@@ -553,7 +683,8 @@ class VibeCity {
         this.gl.bufferData(this.gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), this.gl.STATIC_DRAW);
     }
     
-    private createContourLines(): void {
+    // Commented out for vaporwave aesthetic
+    /*private createContourLines(): void {
         if (!this.lineShaderProgram) return;
         
         const contourVertices: number[] = [];
@@ -626,9 +757,9 @@ class VibeCity {
                 }
             }
         }
-    }
+    }*/
     
-    private getSoilColor(soilType: SoilType): { r: number, g: number, b: number } {
+    /*private getSoilColor(soilType: SoilType): { r: number, g: number, b: number } {
         switch (soilType) {
             case SoilType.SAND:
                 return { r: 0.0, g: 1.0, b: 1.0 }; // Bright cyan
@@ -640,7 +771,7 @@ class VibeCity {
             default:
                 return { r: 0.0, g: 1.0, b: 0.0 }; // Bright neon green
         }
-    }
+    }*/
     
     
     private updateTileInfo(tile: TerrainTile): void {
@@ -758,7 +889,12 @@ class VibeCity {
         // Bind terrain index buffer and draw
         this.gl.bindBuffer(this.gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
         const indexCount = (this.mapSize - 1) * (this.mapSize - 1) * 6;
-        this.gl.drawElements(this.gl.TRIANGLES, indexCount, this.gl.UNSIGNED_SHORT, 0);
+        
+        // Draw wireframe lines only
+        this.gl.lineWidth(2.0);
+        for (let i = 0; i < indexCount; i += 3) {
+            this.gl.drawElements(this.gl.LINE_LOOP, 3, this.gl.UNSIGNED_SHORT, i * 2);
+        }
         
         // Render contour lines
         if (this.lineShaderProgram && this.contourVertexBuffer && this.contourColorBuffer) {
