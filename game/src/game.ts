@@ -265,19 +265,6 @@ class VibeCity {
         }
         this.keysPressed.add(event.key.toLowerCase());
         
-        switch(event.key.toLowerCase()) {
-            case '+':
-            case '=':
-                this.heightScale = Math.min(5.0, this.heightScale + 0.2);
-                this.createTerrainMesh();
-                this.createContourLines();
-                break;
-            case '-':
-                this.heightScale = Math.max(0.2, this.heightScale - 0.2);
-                this.createTerrainMesh();
-                this.createContourLines();
-                break;
-        }
     }
     
     private handleKeyUp(event: KeyboardEvent): void {
@@ -286,7 +273,6 @@ class VibeCity {
     
     private updateCameraFromKeys(): void {
         const moveSpeed = 3;
-        const zoomSpeed = 3;
         
         const isShiftHeld = this.keysPressed.has('shift');
         const isZHeld = this.keysPressed.has('z');
@@ -333,16 +319,6 @@ class VibeCity {
             if (this.keysPressed.has('arrowdown')) {
                 this.moveCamera(0, -moveSpeed, 0);
             }
-        }
-        
-        // Zoom with Q/E or PageUp/PageDown
-        if (this.keysPressed.has('q') || this.keysPressed.has('pageup')) {
-            this.cameraDistance = Math.max(80, this.cameraDistance - zoomSpeed);
-            this.updateCameraPosition();
-        }
-        if (this.keysPressed.has('e') || this.keysPressed.has('pagedown')) {
-            this.cameraDistance = Math.min(400, this.cameraDistance + zoomSpeed);
-            this.updateCameraPosition();
         }
     }
     
