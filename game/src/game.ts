@@ -57,19 +57,34 @@ class VibeCity {
     private contourVertexBuffer: WebGLBuffer | null = null;
     private contourColorBuffer: WebGLBuffer | null = null;
     
-    private mapSize: number = 100;
+    private mapSize: number = 50;
     private heightScale: number = 1.0; // Gentle terrain suitable for city building
     
-    // Camera and interaction - Wide landscape overview
-    private cameraPosition: Vector3 = { x: 120, y: 150, z: 120 };
-    private cameraTarget: Vector3 = { x: 0, y: 60, z: 0 }; // Look at center terrain height (geological scale)
-    private cameraDistance: number = 250;
+    // Camera and interaction - Close view for smaller map
+    private cameraPosition: Vector3 = { x: 40, y: 80, z: 40 };
+    private cameraTarget: Vector3 = { x: 0, y: 50, z: 0 }; // Look at center terrain height (geological scale)
+    private cameraDistance: number = 80;
     
     // FPS tracking
     private lastTime: number = 0;
     private frameCount: number = 0;
     private fps: number = 0;
     private totalFrames: number = 0;
+    
+    // Geological simulation animation
+    private heightmap: number[][] = [];
+    private simulationStep: number = 0;
+    private maxSimulationSteps: number = 50;
+    private simulationSpeed: number = 200; // ms between steps
+    private lastSimulationTime: number = 0;
+    private isSimulating: boolean = true;
+    
+    // Water rendering
+    private waterVertexBuffer: WebGLBuffer | null = null;
+    private waterIndexBuffer: WebGLBuffer | null = null;
+    private waterColorBuffer: WebGLBuffer | null = null;
+    private waterLevel: number = 35; // Water level elevation
+    private showWater: boolean = true;
     
     constructor() {
         this.container = document.getElementById('three-container');
@@ -151,7 +166,10 @@ class VibeCity {
             void main() {
                 // Simple lighting based on height
                 float lightIntensity = 0.6 + 0.4 * (v_position.y / 60.0);
-                gl_FragColor = vec4(v_color * lightIntensity, 1.0);
+                
+                // Make water semi-transparent (blue colors)
+                float alpha = v_color.b > 0.8 ? 0.6 : 1.0;
+                gl_FragColor = vec4(v_color * lightIntensity, alpha);
             }
         `;
         
@@ -269,6 +287,24 @@ class VibeCity {
         }
         this.keysPressed.add(event.key.toLowerCase());
         
+        // Handle simulation controls
+        switch(event.key.toLowerCase()) {
+            case ' ':
+                // Toggle simulation pause/resume
+                this.isSimulating = !this.isSimulating;
+                console.log(this.isSimulating ? 'Geological simulation resumed' : 'Geological simulation paused');
+                break;
+            case 'r':
+                // Restart simulation
+                this.restartGeologicalSimulation();
+                break;
+            case 'w':
+                // Toggle water display
+                this.showWater = !this.showWater;
+                this.createWaterMesh(); // Recreate water mesh
+                console.log(this.showWater ? 'Water enabled' : 'Water disabled');
+                break;
+        }
     }
     
     private handleKeyUp(event: KeyboardEvent): void {
@@ -449,71 +485,141 @@ class VibeCity {
     
     private generateTerrain(): void {
         // Initialize heightmap for geological simulation
-        const heightmap: number[][] = [];
+        this.heightmap = [];
         
-        // Initialize with random noise and some initial uplift
+        // Initialize with flat base and gentle noise
         for (let y = 0; y < this.mapSize; y++) {
-            heightmap[y] = [];
+            this.heightmap[y] = [];
             for (let x = 0; x < this.mapSize; x++) {
-                // Initial random terrain with some structure
-                const noise = Math.random() * 10;
-                const uplift = Math.sin(x * 0.02) * Math.cos(y * 0.02) * 20;
-                heightmap[y]![x] = 50 + noise + uplift;
+                // Start with relatively flat terrain at sea level
+                const noise = (Math.random() - 0.5) * 8; // Reduced noise range
+                this.heightmap[y]![x] = 35 + noise; // Lower base height for better valleys
             }
         }
         
-        // Apply geological processes
-        this.simulateGeologicalForces(heightmap);
+        // Initialize simulation state
+        this.simulationStep = 0;
+        this.lastSimulationTime = performance.now();
         
+        // Create initial terrain from heightmap
+        this.updateTerrainFromHeightmap();
+    }
+    
+    private updateTerrainFromHeightmap(): void {
         // Convert heightmap to terrain tiles
         this.terrain = [];
         for (let y = 0; y < this.mapSize; y++) {
             this.terrain[y] = [];
             for (let x = 0; x < this.mapSize; x++) {
-                this.terrain[y]![x] = this.createTileFromHeight(x, y, heightmap[y]![x]!);
+                this.terrain[y]![x] = this.createTileFromHeight(x, y, this.heightmap[y]![x]!);
+            }
+        }
+        
+        // Update the mesh
+        this.createTerrainMesh();
+        this.createWaterMesh();
+    }
+    
+    private updateGeologicalSimulation(): void {
+        const currentTime = performance.now();
+        
+        if (this.isSimulating && 
+            this.simulationStep < this.maxSimulationSteps && 
+            currentTime - this.lastSimulationTime > this.simulationSpeed) {
+            
+            // Apply one step of geological forces
+            const intensity = 1.0 - (this.simulationStep / this.maxSimulationSteps);
+            this.applyTectonicUplift(this.heightmap, intensity);
+            this.applyHydraulicErosion(this.heightmap);
+            this.applyThermalErosion(this.heightmap);
+            
+            // Smooth edges to prevent artifacts
+            this.smoothEdges(this.heightmap);
+            
+            // Update terrain visualization
+            this.updateTerrainFromHeightmap();
+            
+            this.simulationStep++;
+            this.lastSimulationTime = currentTime;
+            
+            // Update simulation info
+            if (this.fpsCounter) {
+                this.fpsCounter.innerHTML = `FPS: ${this.fps}<br>FRAME: ${this.totalFrames}<br>GEOLOGICAL STEP: ${this.simulationStep}/${this.maxSimulationSteps}`;
+            }
+            
+            if (this.simulationStep >= this.maxSimulationSteps) {
+                console.log('Geological simulation complete!');
             }
         }
     }
     
-    private simulateGeologicalForces(heightmap: number[][]): void {
-        const iterations = 50; // Number of geological time steps
-        
-        for (let i = 0; i < iterations; i++) {
-            // Apply tectonic uplift (decreasing over time)
-            this.applyTectonicUplift(heightmap, 1.0 - (i / iterations));
-            
-            // Apply hydraulic erosion (water flow)
-            this.applyHydraulicErosion(heightmap);
-            
-            // Apply thermal erosion (weathering/slope stabilization)
-            this.applyThermalErosion(heightmap);
-        }
+    private restartGeologicalSimulation(): void {
+        console.log('Restarting geological simulation...');
+        this.generateTerrain(); // This will reinitialize the heightmap and reset simulation
+        this.isSimulating = true;
     }
     
+    /*private simulateGeologicalForces(heightmap: number[][]): void {
+        // This method is now replaced by updateGeologicalSimulation for animation
+        const iterations = 50;
+        
+        for (let i = 0; i < iterations; i++) {
+            const intensity = 1.0 - (i / iterations);
+            this.applyTectonicUplift(heightmap, intensity);
+            this.applyHydraulicErosion(heightmap);
+            this.applyThermalErosion(heightmap);
+        }
+    }*/
+    
     private applyTectonicUplift(heightmap: number[][], intensity: number): void {
-        // Simulate tectonic forces creating hills and ridges
-        for (let y = 1; y < this.mapSize - 1; y++) {
-            for (let x = 1; x < this.mapSize - 1; x++) {
-                // Create some uplift patterns
-                const upliftNoise = Math.sin(x * 0.03) * Math.cos(y * 0.025) * intensity * 0.5;
-                heightmap[y]![x]! += upliftNoise;
+        // Create scattered hill centers for more natural terrain
+        const hillCenters = [
+            { x: 12, y: 15, strength: 0.8 },
+            { x: 35, y: 8, strength: 0.6 },
+            { x: 28, y: 25, strength: 0.7 },
+            { x: 8, y: 35, strength: 0.5 },
+            { x: 42, y: 32, strength: 0.6 },
+            { x: 20, y: 40, strength: 0.4 },
+            { x: 38, y: 18, strength: 0.5 },
+            { x: 15, y: 28, strength: 0.3 },
+        ];
+        
+        for (let y = 2; y < this.mapSize - 2; y++) {
+            for (let x = 2; x < this.mapSize - 2; x++) {
+                let totalUplift = 0;
+                
+                // Calculate distance-based uplift from each hill center
+                for (const hill of hillCenters) {
+                    const distance = Math.sqrt((x - hill.x) ** 2 + (y - hill.y) ** 2);
+                    const maxRadius = 15; // Hills influence radius
+                    
+                    if (distance < maxRadius) {
+                        // Gaussian-like falloff for natural hill shape
+                        const falloff = Math.exp(-(distance * distance) / (2 * (maxRadius / 3) ** 2));
+                        totalUplift += hill.strength * falloff * intensity * 0.3;
+                    }
+                }
+                
+                // Add some gentle regional variation
+                const noise = (Math.random() - 0.5) * intensity * 0.05;
+                heightmap[y]![x]! += totalUplift + noise;
             }
         }
     }
     
     private applyHydraulicErosion(heightmap: number[][]): void {
-        const erosionRate = 0.3;
-        const sedimentCapacity = 2.0;
+        const erosionRate = 0.8; // Increased from 0.3 for stronger erosion
+        const sedimentCapacity = 3.0; // Increased capacity for more sediment transport
         
-        // Simulate water drops flowing downhill
-        for (let drop = 0; drop < this.mapSize * 2; drop++) {
+        // Simulate more intense rainfall with more water drops
+        for (let drop = 0; drop < this.mapSize * 4; drop++) {
             let x = Math.floor(Math.random() * this.mapSize);
             let y = Math.floor(Math.random() * this.mapSize);
             let sediment = 0;
             
             // Follow water flow for several steps
             for (let step = 0; step < 30; step++) {
-                if (x <= 0 || x >= this.mapSize - 1 || y <= 0 || y >= this.mapSize - 1) break;
+                if (x <= 2 || x >= this.mapSize - 3 || y <= 2 || y >= this.mapSize - 3) break;
                 
                 // Find steepest descent direction
                 let steepestGradient = 0;
@@ -564,8 +670,8 @@ class VibeCity {
         const maxSlope = 0.5; // Maximum stable slope
         const erosionRate = 0.1;
         
-        for (let y = 1; y < this.mapSize - 1; y++) {
-            for (let x = 1; x < this.mapSize - 1; x++) {
+        for (let y = 2; y < this.mapSize - 2; y++) {
+            for (let x = 2; x < this.mapSize - 2; x++) {
                 const currentHeight = heightmap[y]![x]!;
                 
                 // Check all neighbors
@@ -586,6 +692,23 @@ class VibeCity {
                         }
                     }
                 }
+            }
+        }
+    }
+    
+    private smoothEdges(heightmap: number[][]): void {
+        // Smooth the edges to prevent spike artifacts
+        for (let i = 0; i < 2; i++) {
+            // Top and bottom edges
+            for (let x = 0; x < this.mapSize; x++) {
+                heightmap[i]![x] = heightmap[2]![x]!;
+                heightmap[this.mapSize - 1 - i]![x] = heightmap[this.mapSize - 3]![x]!;
+            }
+            
+            // Left and right edges
+            for (let y = 0; y < this.mapSize; y++) {
+                heightmap[y]![i] = heightmap[y]![2]!;
+                heightmap[y]![this.mapSize - 1 - i] = heightmap[y]![this.mapSize - 3]!;
             }
         }
     }
@@ -681,6 +804,73 @@ class VibeCity {
         this.indexBuffer = this.gl.createBuffer();
         this.gl.bindBuffer(this.gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
         this.gl.bufferData(this.gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), this.gl.STATIC_DRAW);
+    }
+    
+    private createWaterMesh(): void {
+        if (!this.shaderProgram || !this.showWater) return;
+        
+        const waterVertices: number[] = [];
+        const waterColors: number[] = [];
+        const waterIndices: number[] = [];
+        
+        let vertexIndex = 0;
+        
+        // Create water surface where terrain is below water level
+        for (let y = 0; y < this.mapSize - 1; y++) {
+            for (let x = 0; x < this.mapSize - 1; x++) {
+                // Check if this quad should have water
+                const corners = [
+                    this.heightmap[y]![x]!,
+                    this.heightmap[y]![x + 1]!,
+                    this.heightmap[y + 1]![x]!,
+                    this.heightmap[y + 1]![x + 1]!
+                ];
+                
+                // If any corner is below water level, add water quad
+                if (corners.some(height => height < this.waterLevel)) {
+                    // Add four vertices for water quad at water level
+                    const positions = [
+                        [x - this.mapSize / 2, this.waterLevel, y - this.mapSize / 2],
+                        [x + 1 - this.mapSize / 2, this.waterLevel, y - this.mapSize / 2],
+                        [x - this.mapSize / 2, this.waterLevel, y + 1 - this.mapSize / 2],
+                        [x + 1 - this.mapSize / 2, this.waterLevel, y + 1 - this.mapSize / 2]
+                    ];
+                    
+                    positions.forEach(pos => {
+                        waterVertices.push(pos[0]!, pos[1]!, pos[2]!);
+                        // Bright cyan color for water visibility
+                        waterColors.push(0.0, 1.0, 1.0); // Bright cyan
+                    });
+                    
+                    // Add indices for two triangles
+                    waterIndices.push(
+                        vertexIndex, vertexIndex + 1, vertexIndex + 2,
+                        vertexIndex + 1, vertexIndex + 3, vertexIndex + 2
+                    );
+                    
+                    vertexIndex += 4;
+                }
+            }
+        }
+        
+        // Create water buffers only if we have water vertices
+        if (waterVertices.length > 0) {
+            this.waterVertexBuffer = this.gl.createBuffer();
+            this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.waterVertexBuffer);
+            this.gl.bufferData(this.gl.ARRAY_BUFFER, new Float32Array(waterVertices), this.gl.STATIC_DRAW);
+            
+            this.waterColorBuffer = this.gl.createBuffer();
+            this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.waterColorBuffer);
+            this.gl.bufferData(this.gl.ARRAY_BUFFER, new Float32Array(waterColors), this.gl.STATIC_DRAW);
+            
+            this.waterIndexBuffer = this.gl.createBuffer();
+            this.gl.bindBuffer(this.gl.ELEMENT_ARRAY_BUFFER, this.waterIndexBuffer);
+            this.gl.bufferData(this.gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(waterIndices), this.gl.STATIC_DRAW);
+        } else {
+            this.waterVertexBuffer = null;
+            this.waterColorBuffer = null;
+            this.waterIndexBuffer = null;
+        }
     }
     
     // Commented out for vaporwave aesthetic
@@ -833,6 +1023,7 @@ class VibeCity {
     private animate(): void {
         requestAnimationFrame(() => this.animate());
         this.updateFPS();
+        this.updateGeologicalSimulation();
         this.updateCameraFromKeys();
         this.render();
     }
@@ -894,6 +1085,31 @@ class VibeCity {
         this.gl.lineWidth(2.0);
         for (let i = 0; i < indexCount; i += 3) {
             this.gl.drawElements(this.gl.LINE_LOOP, 3, this.gl.UNSIGNED_SHORT, i * 2);
+        }
+        
+        // Render water
+        if (this.waterVertexBuffer && this.waterColorBuffer && this.waterIndexBuffer) {
+            this.gl.useProgram(this.shaderProgram);
+            
+            // Set uniforms (already set above)
+            this.gl.uniformMatrix4fv(projMatrixLocation, false, projectionMatrix.elements);
+            this.gl.uniformMatrix4fv(mvMatrixLocation, false, modelViewMatrix.elements);
+            
+            // Bind water vertex buffer
+            this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.waterVertexBuffer);
+            this.gl.enableVertexAttribArray(positionLocation);
+            this.gl.vertexAttribPointer(positionLocation, 3, this.gl.FLOAT, false, 0, 0);
+            
+            // Bind water color buffer
+            this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.waterColorBuffer);
+            this.gl.enableVertexAttribArray(colorLocation);
+            this.gl.vertexAttribPointer(colorLocation, 3, this.gl.FLOAT, false, 0, 0);
+            
+            // Bind water index buffer and draw
+            this.gl.bindBuffer(this.gl.ELEMENT_ARRAY_BUFFER, this.waterIndexBuffer);
+            const waterBufferSize = this.gl.getBufferParameter(this.gl.ELEMENT_ARRAY_BUFFER, this.gl.BUFFER_SIZE);
+            const waterIndexCount = waterBufferSize / 2; // Uint16Array
+            this.gl.drawElements(this.gl.TRIANGLES, waterIndexCount, this.gl.UNSIGNED_SHORT, 0);
         }
         
         // Render contour lines
