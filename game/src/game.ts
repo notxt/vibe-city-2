@@ -46,6 +46,7 @@ class VibeCity {
     private gl: WebGLRenderingContext;
     private container: HTMLElement | null;
     private tileInfo: HTMLElement | null;
+    private fpsCounter: HTMLElement | null;
     
     private terrain: TerrainTile[][];
     private shaderProgram: WebGLProgram | null = null;
@@ -64,9 +65,16 @@ class VibeCity {
     private cameraTarget: Vector3 = { x: 0, y: 8, z: 0 }; // Look at center terrain height
     private cameraDistance: number = 200;
     
+    // FPS tracking
+    private lastTime: number = 0;
+    private frameCount: number = 0;
+    private fps: number = 0;
+    private totalFrames: number = 0;
+    
     constructor() {
         this.container = document.getElementById('three-container');
         this.tileInfo = document.getElementById('tile-info');
+        this.fpsCounter = document.getElementById('fps-counter');
         this.terrain = [];
         
         // Create WebGL canvas
@@ -277,21 +285,39 @@ class VibeCity {
     }
     
     private updateCameraFromKeys(): void {
-        const rotationSpeed = 0.02;
+        const moveSpeed = 3;
         const zoomSpeed = 3;
         
-        // Camera rotation with arrow keys or WASD
-        if (this.keysPressed.has('arrowleft') || this.keysPressed.has('a')) {
-            this.rotateCameraAroundTarget(-rotationSpeed, 0);
-        }
-        if (this.keysPressed.has('arrowright') || this.keysPressed.has('d')) {
-            this.rotateCameraAroundTarget(rotationSpeed, 0);
-        }
-        if (this.keysPressed.has('arrowup') || this.keysPressed.has('w')) {
-            this.rotateCameraAroundTarget(0, -rotationSpeed);
-        }
-        if (this.keysPressed.has('arrowdown') || this.keysPressed.has('s')) {
-            this.rotateCameraAroundTarget(0, rotationSpeed);
+        const isShiftHeld = this.keysPressed.has('shift');
+        
+        if (isShiftHeld) {
+            // Camera mode 2: pan mode - pan in all directions
+            if (this.keysPressed.has('arrowleft') || this.keysPressed.has('a')) {
+                this.panCamera(-moveSpeed, 0);
+            }
+            if (this.keysPressed.has('arrowright') || this.keysPressed.has('d')) {
+                this.panCamera(moveSpeed, 0);
+            }
+            if (this.keysPressed.has('arrowup') || this.keysPressed.has('w')) {
+                this.panCamera(0, moveSpeed);
+            }
+            if (this.keysPressed.has('arrowdown') || this.keysPressed.has('s')) {
+                this.panCamera(0, -moveSpeed);
+            }
+        } else {
+            // Camera mode 1: move mode - move camera in all directions
+            if (this.keysPressed.has('arrowleft') || this.keysPressed.has('a')) {
+                this.moveCamera(-moveSpeed, 0, 0);
+            }
+            if (this.keysPressed.has('arrowright') || this.keysPressed.has('d')) {
+                this.moveCamera(moveSpeed, 0, 0);
+            }
+            if (this.keysPressed.has('arrowup') || this.keysPressed.has('w')) {
+                this.moveCamera(0, 0, moveSpeed);
+            }
+            if (this.keysPressed.has('arrowdown') || this.keysPressed.has('s')) {
+                this.moveCamera(0, 0, -moveSpeed);
+            }
         }
         
         // Zoom with Q/E or PageUp/PageDown
@@ -303,6 +329,69 @@ class VibeCity {
             this.cameraDistance = Math.min(400, this.cameraDistance + zoomSpeed);
             this.updateCameraPosition();
         }
+    }
+    
+    private moveCamera(deltaX: number, deltaY: number, deltaZ: number): void {
+        // Calculate camera's coordinate system vectors
+        const eye = this.cameraPosition;
+        const target = this.cameraTarget;
+        const up = { x: 0, y: 1, z: 0 };
+        
+        // Forward vector (from camera to target)
+        const forward = this.normalize({
+            x: target.x - eye.x,
+            y: target.y - eye.y,
+            z: target.z - eye.z
+        });
+        
+        // Right vector (cross product of forward and up)
+        const right = this.normalize(this.cross(forward, up));
+        
+        // Up vector (cross product of right and forward)
+        const cameraUp = this.cross(right, forward);
+        
+        // Move both camera position and target together
+        const movement = {
+            x: right.x * deltaX + cameraUp.x * deltaY + forward.x * deltaZ,
+            y: right.y * deltaX + cameraUp.y * deltaY + forward.y * deltaZ,
+            z: right.z * deltaX + cameraUp.z * deltaY + forward.z * deltaZ
+        };
+        
+        this.cameraPosition.x += movement.x;
+        this.cameraPosition.y += movement.y;
+        this.cameraPosition.z += movement.z;
+        
+        this.cameraTarget.x += movement.x;
+        this.cameraTarget.y += movement.y;
+        this.cameraTarget.z += movement.z;
+    }
+    
+    private panCamera(deltaX: number, deltaY: number): void {
+        // Calculate camera's right and up vectors for panning
+        const eye = this.cameraPosition;
+        const target = this.cameraTarget;
+        const up = { x: 0, y: 1, z: 0 };
+        
+        // Forward vector (from camera to target)
+        const forward = this.normalize({
+            x: target.x - eye.x,
+            y: target.y - eye.y,
+            z: target.z - eye.z
+        });
+        
+        // Right vector (cross product of forward and up)
+        const right = this.normalize(this.cross(forward, up));
+        
+        // Up vector (cross product of right and forward)
+        const cameraUp = this.cross(right, forward);
+        
+        // Apply panning to camera target
+        this.cameraTarget.x += right.x * deltaX + cameraUp.x * deltaY;
+        this.cameraTarget.y += right.y * deltaX + cameraUp.y * deltaY;
+        this.cameraTarget.z += right.z * deltaX + cameraUp.z * deltaY;
+        
+        // Update camera position to maintain the same distance and angle
+        this.updateCameraPosition();
     }
     
     private handleClick(event: MouseEvent): void {
@@ -320,26 +409,6 @@ class VibeCity {
         }
     }
     
-    
-    private rotateCameraAroundTarget(deltaX: number, deltaY: number): void {
-        // Calculate current spherical coordinates
-        const dx = this.cameraPosition.x - this.cameraTarget.x;
-        const dy = this.cameraPosition.y - this.cameraTarget.y;
-        const dz = this.cameraPosition.z - this.cameraTarget.z;
-        
-        // Convert to spherical coordinates
-        const theta = Math.atan2(dx, dz);
-        const phi = Math.acos(dy / this.cameraDistance);
-        
-        // Apply rotation deltas
-        const newTheta = theta + deltaX;
-        const newPhi = Math.max(0.1, Math.min(Math.PI - 0.1, phi + deltaY));
-        
-        // Convert back to cartesian and update camera position
-        this.cameraPosition.x = this.cameraTarget.x + this.cameraDistance * Math.sin(newPhi) * Math.sin(newTheta);
-        this.cameraPosition.y = this.cameraTarget.y + this.cameraDistance * Math.cos(newPhi);
-        this.cameraPosition.z = this.cameraTarget.z + this.cameraDistance * Math.sin(newPhi) * Math.cos(newTheta);
-    }
     
     private updateCameraPosition(): void {
         // Update camera based on current distance
@@ -641,8 +710,25 @@ class VibeCity {
     
     private animate(): void {
         requestAnimationFrame(() => this.animate());
+        this.updateFPS();
         this.updateCameraFromKeys();
         this.render();
+    }
+    
+    private updateFPS(): void {
+        const currentTime = performance.now();
+        this.frameCount++;
+        this.totalFrames++;
+        
+        if (currentTime - this.lastTime >= 1000) {
+            this.fps = Math.round(this.frameCount * 1000 / (currentTime - this.lastTime));
+            this.frameCount = 0;
+            this.lastTime = currentTime;
+        }
+        
+        if (this.fpsCounter) {
+            this.fpsCounter.innerHTML = `FPS: ${this.fps}<br>FRAME: ${this.totalFrames}`;
+        }
     }
     
     private render(): void {
