@@ -26,7 +26,9 @@ const server = http.createServer((req, res) => {
   let filePath;
   
   if (req.url === '/' || req.url.endsWith('.html') || req.url.endsWith('.css')) {
-    filePath = path.join(__dirname, 'game/src', req.url === '/' ? 'index.html' : req.url);
+    filePath = path.join(__dirname, 'game', req.url === '/' ? 'index.html' : req.url);
+  } else if (req.url.startsWith('/dist/')) {
+    filePath = path.join(__dirname, 'game', req.url);
   } else {
     filePath = path.join(__dirname, 'game/dist/src', req.url);
   }
