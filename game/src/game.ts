@@ -289,34 +289,49 @@ class VibeCity {
         const zoomSpeed = 3;
         
         const isShiftHeld = this.keysPressed.has('shift');
+        const isZHeld = this.keysPressed.has('z');
         
-        if (isShiftHeld) {
+        if (isZHeld) {
+            // Camera mode 3: forward/backward mode
+            if (this.keysPressed.has('arrowleft')) {
+                this.moveCamera(-moveSpeed, 0, 0);
+            }
+            if (this.keysPressed.has('arrowright')) {
+                this.moveCamera(moveSpeed, 0, 0);
+            }
+            if (this.keysPressed.has('arrowup')) {
+                this.moveCamera(0, 0, moveSpeed);
+            }
+            if (this.keysPressed.has('arrowdown')) {
+                this.moveCamera(0, 0, -moveSpeed);
+            }
+        } else if (isShiftHeld) {
             // Camera mode 2: pan mode - pan in all directions
-            if (this.keysPressed.has('arrowleft') || this.keysPressed.has('a')) {
+            if (this.keysPressed.has('arrowleft')) {
                 this.panCamera(-moveSpeed, 0);
             }
-            if (this.keysPressed.has('arrowright') || this.keysPressed.has('d')) {
+            if (this.keysPressed.has('arrowright')) {
                 this.panCamera(moveSpeed, 0);
             }
-            if (this.keysPressed.has('arrowup') || this.keysPressed.has('w')) {
+            if (this.keysPressed.has('arrowup')) {
                 this.panCamera(0, moveSpeed);
             }
-            if (this.keysPressed.has('arrowdown') || this.keysPressed.has('s')) {
+            if (this.keysPressed.has('arrowdown')) {
                 this.panCamera(0, -moveSpeed);
             }
         } else {
             // Camera mode 1: move mode - move camera in all directions
-            if (this.keysPressed.has('arrowleft') || this.keysPressed.has('a')) {
+            if (this.keysPressed.has('arrowleft')) {
                 this.moveCamera(-moveSpeed, 0, 0);
             }
-            if (this.keysPressed.has('arrowright') || this.keysPressed.has('d')) {
+            if (this.keysPressed.has('arrowright')) {
                 this.moveCamera(moveSpeed, 0, 0);
             }
-            if (this.keysPressed.has('arrowup') || this.keysPressed.has('w')) {
-                this.moveCamera(0, 0, moveSpeed);
+            if (this.keysPressed.has('arrowup')) {
+                this.moveCamera(0, moveSpeed, 0);
             }
-            if (this.keysPressed.has('arrowdown') || this.keysPressed.has('s')) {
-                this.moveCamera(0, 0, -moveSpeed);
+            if (this.keysPressed.has('arrowdown')) {
+                this.moveCamera(0, -moveSpeed, 0);
             }
         }
         
