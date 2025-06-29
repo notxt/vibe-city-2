@@ -4,7 +4,8 @@
     "outDir": "game/dist",
     "rootDir": "game/src",
     "module": "None",
-    "target": "ES2020"
+    "target": "ES2020",
+    "types": ["@webgpu/types"]
   },
   "include": ["game/src/**/*"],
   "exclude": ["node_modules", "dist", "game/dist"]
