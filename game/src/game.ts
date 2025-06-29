@@ -44,9 +44,12 @@ interface Matrix4 {
 
 // Game State Interface
 interface GameState {
-    // Canvas and WebGL
+    // Canvas and WebGPU
     canvas: HTMLCanvasElement;
-    gl: WebGLRenderingContext;
+    adapter: GPUAdapter;
+    device: GPUDevice;
+    context: GPUCanvasContext;
+    format: GPUTextureFormat
     
     // Terrain
     terrain: TerrainTile[][];
@@ -55,6 +58,13 @@ interface GameState {
     heightScale: number;
     waterLevel: number;
     showWater: boolean;
+    
+    // Sun
+    sun: {
+        position: Vector3;
+        color: Vector3;
+        intensity: number;
+    };
     
     // Camera
     camera: {
@@ -76,20 +86,29 @@ interface GameState {
         isActive: boolean;
     };
     
-    // Rendering
-    shaders: {
-        terrain: WebGLProgram | null;
-        lines: WebGLProgram | null;
+    // Rendering Pipelines
+    pipelines: {
+        terrain: GPURenderPipeline | null;
+        lines: GPURenderPipeline | null;
     };
+    
+    // GPU Buffers
     buffers: {
-        vertex: WebGLBuffer | null;
-        index: WebGLBuffer | null;
-        color: WebGLBuffer | null;
-        contourVertex: WebGLBuffer | null;
-        contourColor: WebGLBuffer | null;
-        waterVertex: WebGLBuffer | null;
-        waterIndex: WebGLBuffer | null;
-        waterColor: WebGLBuffer | null;
+        vertex: GPUBuffer | null;
+        index: GPUBuffer | null;
+        color: GPUBuffer | null;
+        contourVertex: GPUBuffer | null;
+        contourColor: GPUBuffer | null;
+        waterVertex: GPUBuffer | null;
+        waterIndex: GPUBuffer | null;
+        waterColor: GPUBuffer | null;
+        uniform: GPUBuffer | null;
+    };
+    
+    // Bind Groups
+    bindGroups: {
+        terrain: GPUBindGroup | null;
+        lines: GPUBindGroup | null;
     };
     
     // UI Elements
@@ -138,136 +157,168 @@ const cross = (a: Vector3, b: Vector3): Vector3 => ({
 const dot = (a: Vector3, b: Vector3): number => 
     a.x * b.x + a.y * b.y + a.z * b.z;
 
-// WebGL Shader Functions (Side Effects)
-const createShader = (gl: WebGLRenderingContext, type: number, source: string): WebGLShader | null => {
-    const shader = gl.createShader(type);
-    if (!shader) return null;
-    
-    gl.shaderSource(shader, source);
-    gl.compileShader(shader);
-    
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        console.error('Shader compilation error:', gl.getShaderInfoLog(shader));
-        gl.deleteShader(shader);
-        return null;
-    }
-    
-    return shader;
-};
+// Old WebGL functions removed - now using WebGPU
 
-const createProgram = (gl: WebGLRenderingContext, vertexShader: WebGLShader, fragmentShader: WebGLShader): WebGLProgram | null => {
-    const program = gl.createProgram();
-    if (!program) return null;
-    
-    gl.attachShader(program, vertexShader);
-    gl.attachShader(program, fragmentShader);
-    gl.linkProgram(program);
-    
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-        console.error('Program linking error:', gl.getProgramInfoLog(program));
-        gl.deleteProgram(program);
-        return null;
-    }
-    
-    return program;
-};
+// WGSL Shader Sources
+const getTerrainShader = () => `
+struct Uniforms {
+    modelViewMatrix: mat4x4<f32>,
+    projectionMatrix: mat4x4<f32>,
+    sunPosition: vec3<f32>,
+    sunColor: vec3<f32>,
+    sunIntensity: f32,
+    _padding: vec3<f32> // Align to 16 bytes
+}
 
-// Shader Sources
-const getTerrainVertexShader = () => `
-    attribute vec3 a_position;
-    attribute vec3 a_color;
+struct VertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) color: vec3<f32>
+}
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec3<f32>,
+    @location(1) worldPosition: vec3<f32>
+}
+
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+@vertex
+fn vs_main(input: VertexInput) -> VertexOutput {
+    var output: VertexOutput;
+    let mvPosition = uniforms.modelViewMatrix * vec4<f32>(input.position, 1.0);
+    output.position = uniforms.projectionMatrix * mvPosition;
+    output.color = input.color;
+    output.worldPosition = input.position;
+    return output;
+}
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    // Calculate surface normal using screen-space derivatives
+    let dFdxPos = dpdx(input.worldPosition);
+    let dFdyPos = dpdy(input.worldPosition);
+    let normal = normalize(cross(dFdxPos, dFdyPos));
     
-    uniform mat4 u_modelViewMatrix;
-    uniform mat4 u_projectionMatrix;
+    // Sun lighting configuration
+    let sunPosition = uniforms.sunPosition;
+    let sunDirection = normalize(sunPosition - input.worldPosition);
+    let sunColor = uniforms.sunColor;
+    let sunIntensity = uniforms.sunIntensity;
     
-    varying vec3 v_color;
-    varying vec3 v_position;
+    // Reduced ambient lighting for dramatic shadows
+    let ambient = vec3<f32>(0.3, 0.4, 0.5) * 0.2;
     
-    void main() {
-        vec4 mvPosition = u_modelViewMatrix * vec4(a_position, 1.0);
-        gl_Position = u_projectionMatrix * mvPosition;
-        v_color = a_color;
-        v_position = a_position;
-    }
+    // Dramatic diffuse lighting with much brighter highlights
+    let diffuseFactor = max(0.05, dot(normal, sunDirection)); // Allow much darker shadows
+    let diffuse = sunColor * diffuseFactor * sunIntensity * 1.5; // Much brighter highlights
+    
+    // Enhanced rim lighting for brilliant peak highlights
+    let viewDirection = normalize(vec3<f32>(0.0, 1.0, -1.0)); // Camera direction
+    let rimFactor = 1.0 - max(0.0, dot(normal, viewDirection));
+    let rimLight = vec3<f32>(1.2, 0.4, 1.2) * pow(rimFactor, 2.5) * 0.4; // Brighter rim
+    
+    // Combine lighting
+    let lighting = ambient + diffuse + rimLight;
+    
+    // Apply to vertex colors with brightness boost
+    let finalColor = input.color * lighting * 1.8;
+    
+    // Only underwater areas (blue=1.0) get transparency
+    let isWater = input.color.b > 0.9;
+    let alpha = select(1.0, 0.7, isWater);
+    
+    return vec4<f32>(finalColor, alpha);
+}
 `;
 
-const getTerrainFragmentShader = () => `
-    precision mediump float;
-    
-    varying vec3 v_color;
-    varying vec3 v_position;
-    
-    void main() {
-        // Enhanced vaporwave lighting effects
-        float heightFactor = v_position.y / 60.0;
-        
-        // Create multiple lighting layers for vaporwave effect
-        float baseLight = 0.4 + 0.6 * heightFactor;
-        float rimLight = pow(1.0 - abs(heightFactor - 0.5) * 2.0, 3.0) * 0.8;
-        float gradientLight = sin(v_position.y * 0.1) * 0.3 + 0.7;
-        
-        // Combine lighting effects
-        float totalLight = baseLight + rimLight + gradientLight;
-        totalLight = clamp(totalLight, 0.3, 2.0);
-        
-        // Add subtle color variation based on position
-        vec3 colorShift = vec3(
-            sin(v_position.y * 0.05) * 0.1,
-            0.0,
-            cos(v_position.y * 0.05) * 0.1
-        );
-        
-        vec3 finalColor = (v_color + colorShift) * totalLight;
-        
-        // Make water semi-transparent, terrain opaque
-        float alpha = v_color.b > 0.8 ? 0.7 : 1.0;
-        gl_FragColor = vec4(finalColor, alpha);
-    }
+const getLineShader = () => `
+struct Uniforms {
+    modelViewMatrix: mat4x4<f32>,
+    projectionMatrix: mat4x4<f32>
+}
+
+struct VertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) color: vec3<f32>
+}
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec3<f32>
+}
+
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+@vertex
+fn vs_main(input: VertexInput) -> VertexOutput {
+    var output: VertexOutput;
+    let mvPosition = uniforms.modelViewMatrix * vec4<f32>(input.position, 1.0);
+    output.position = uniforms.projectionMatrix * mvPosition;
+    output.color = input.color;
+    return output;
+}
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(input.color, 1.0);
+}
 `;
 
-const getLineVertexShader = () => `
-    attribute vec3 a_position;
-    attribute vec3 a_color;
-    
-    uniform mat4 u_modelViewMatrix;
-    uniform mat4 u_projectionMatrix;
-    
-    varying vec3 v_color;
-    
-    void main() {
-        vec4 mvPosition = u_modelViewMatrix * vec4(a_position, 1.0);
-        gl_Position = u_projectionMatrix * mvPosition;
-        gl_PointSize = 3.0;
-        v_color = a_color;
+// WebGPU Initialization Functions
+const initWebGPU = async (): Promise<{
+    adapter: GPUAdapter;
+    device: GPUDevice;
+    context: GPUCanvasContext;
+    format: GPUTextureFormat;
+    canvas: HTMLCanvasElement;
+}> => {
+    // Check for WebGPU support
+    if (!navigator.gpu) {
+        throw new Error('WebGPU not supported in this browser');
     }
-`;
-
-const getLineFragmentShader = () => `
-    precision mediump float;
     
-    varying vec3 v_color;
-    
-    void main() {
-        gl_FragColor = vec4(v_color, 1.0);
+    // Request adapter
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) {
+        throw new Error('No appropriate GPUAdapter found');
     }
-`;
-
-// State Creation Functions
-const createInitialState = (): GameState => {
-    const container = document.getElementById('three-container');
-    const tileInfo = document.getElementById('tile-info');
-    const fpsCounter = document.getElementById('fps-counter');
     
-    // Create WebGL canvas
+    // Request device
+    const device = await adapter.requestDevice();
+    
+    // Create canvas and get WebGPU context
     const canvas = document.createElement('canvas');
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
     canvas.tabIndex = 0;
     
-    const gl = canvas.getContext('webgl');
-    if (!gl) {
-        throw new Error('WebGL not supported');
+    const context = canvas.getContext('webgpu');
+    if (!context) {
+        throw new Error('Could not get WebGPU context');
     }
+    
+    // Get preferred format
+    const format = navigator.gpu.getPreferredCanvasFormat();
+    
+    // Configure the context
+    context.configure({
+        device,
+        format,
+        alphaMode: 'opaque'
+    });
+    
+    return { adapter, device, context, format, canvas };
+};
+
+// State Creation Functions
+const createInitialState = async (): Promise<GameState> => {
+    const container = document.getElementById('three-container');
+    const tileInfo = document.getElementById('tile-info');
+    const fpsCounter = document.getElementById('fps-counter');
+    
+    // Initialize WebGPU
+    const { adapter, device, context, format, canvas } = await initWebGPU();
     
     if (container) {
         container.appendChild(canvas);
@@ -275,17 +326,25 @@ const createInitialState = (): GameState => {
     
     return {
         canvas,
-        gl,
+        adapter,
+        device,
+        context,
+        format,
         terrain: [],
         heightmap: [],
         mapSize: 50,
-        heightScale: 1.0,
+        heightScale: 2.0,
         waterLevel: 35,
         showWater: true,
+        sun: {
+            position: { x: 100, y: 150, z: 50 },
+            color: { x: 1.0, y: 0.95, z: 0.8 }, // Warm sunlight
+            intensity: 12.0
+        },
         camera: {
-            position: { x: 40, y: 80, z: 40 },
-            target: { x: 0, y: 50, z: 0 },
-            distance: 80,
+            position: { x: 0, y: 120, z: 40 },
+            target: { x: 0, y: 80, z: 0 },
+            distance: 50,
             velocity: { x: 0, y: 0, z: 0 },
             acceleration: 0.15,
             maxSpeed: 1.5,
@@ -298,7 +357,7 @@ const createInitialState = (): GameState => {
             lastTime: 0,
             isActive: true
         },
-        shaders: {
+        pipelines: {
             terrain: null,
             lines: null
         },
@@ -310,7 +369,12 @@ const createInitialState = (): GameState => {
             contourColor: null,
             waterVertex: null,
             waterIndex: null,
-            waterColor: null
+            waterColor: null,
+            uniform: null
+        },
+        bindGroups: {
+            terrain: null,
+            lines: null
         },
         elements: {
             container,
@@ -327,59 +391,151 @@ const createInitialState = (): GameState => {
     };
 };
 
-// WebGL Setup Functions (Side Effects)
-const setupWebGL = (state: GameState): void => {
-    const { gl } = state;
+// WebGPU Setup Functions
+const createRenderPipelines = (state: GameState): GameState => {
+    const { device, format } = state;
     
-    // Enable depth testing
-    gl.enable(gl.DEPTH_TEST);
-    gl.enable(gl.CULL_FACE);
+    // Create uniform buffer for matrices and sun data
+    const uniformBuffer = device.createBuffer({
+        size: 320, // 2 * 64 bytes for matrices + 64 bytes for sun data + padding
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
     
-    // Enable blending for transparency
-    gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    // Create bind group layout for uniforms
+    const bindGroupLayout = device.createBindGroupLayout({
+        entries: [{
+            binding: 0,
+            visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+            buffer: { type: 'uniform' }
+        }]
+    });
     
-    // Set clear color to deeper purple/black for enhanced vaporwave aesthetic
-    gl.clearColor(0.05, 0.0, 0.15, 1.0);
+    // Create terrain render pipeline
+    const terrainModule = device.createShaderModule({
+        code: getTerrainShader()
+    });
     
-    // Set viewport
-    gl.viewport(0, 0, state.canvas.width, state.canvas.height);
-};
-
-const initShaders = (state: GameState): GameState => {
-    const { gl } = state;
+    console.log('Terrain shader module created successfully');
     
-    // Create terrain shaders
-    const vertexShader = createShader(gl, gl.VERTEX_SHADER, getTerrainVertexShader());
-    const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, getTerrainFragmentShader());
+    const terrainPipeline = device.createRenderPipeline({
+        layout: device.createPipelineLayout({
+            bindGroupLayouts: [bindGroupLayout]
+        }),
+        vertex: {
+            module: terrainModule,
+            entryPoint: 'vs_main',
+            buffers: [{
+                arrayStride: 6 * 4, // 3 floats for position + 3 floats for color
+                attributes: [
+                    {
+                        shaderLocation: 0,
+                        offset: 0,
+                        format: 'float32x3' // position
+                    },
+                    {
+                        shaderLocation: 1,
+                        offset: 3 * 4,
+                        format: 'float32x3' // color
+                    }
+                ]
+            }]
+        },
+        fragment: {
+            module: terrainModule,
+            entryPoint: 'fs_main',
+            targets: [{
+                format,
+                // No blending for maximum brightness
+            }]
+        },
+        primitive: {
+            topology: 'triangle-list',
+            cullMode: 'none'
+        },
+        depthStencil: {
+            depthWriteEnabled: true,
+            depthCompare: 'less',
+            format: 'depth24plus'
+        }
+    });
     
-    if (!vertexShader || !fragmentShader) {
-        throw new Error('Failed to create terrain shaders');
-    }
+    console.log('Terrain pipeline created successfully');
     
-    const terrainProgram = createProgram(gl, vertexShader, fragmentShader);
-    if (!terrainProgram) {
-        throw new Error('Failed to create terrain shader program');
-    }
+    // Create line render pipeline
+    const lineModule = device.createShaderModule({
+        code: getLineShader()
+    });
     
-    // Create line shaders
-    const lineVertexShader = createShader(gl, gl.VERTEX_SHADER, getLineVertexShader());
-    const lineFragmentShader = createShader(gl, gl.FRAGMENT_SHADER, getLineFragmentShader());
+    const linePipeline = device.createRenderPipeline({
+        layout: device.createPipelineLayout({
+            bindGroupLayouts: [bindGroupLayout]
+        }),
+        vertex: {
+            module: lineModule,
+            entryPoint: 'vs_main',
+            buffers: [{
+                arrayStride: 6 * 4, // 3 floats for position + 3 floats for color
+                attributes: [
+                    {
+                        shaderLocation: 0,
+                        offset: 0,
+                        format: 'float32x3' // position
+                    },
+                    {
+                        shaderLocation: 1,
+                        offset: 3 * 4,
+                        format: 'float32x3' // color
+                    }
+                ]
+            }]
+        },
+        fragment: {
+            module: lineModule,
+            entryPoint: 'fs_main',
+            targets: [{
+                format
+            }]
+        },
+        primitive: {
+            topology: 'line-list'
+        },
+        depthStencil: {
+            depthWriteEnabled: true,
+            depthCompare: 'less',
+            format: 'depth24plus'
+        }
+    });
     
-    if (!lineVertexShader || !lineFragmentShader) {
-        throw new Error('Failed to create line shaders');
-    }
+    // Create bind groups
+    const terrainBindGroup = device.createBindGroup({
+        layout: bindGroupLayout,
+        entries: [{
+            binding: 0,
+            resource: { buffer: uniformBuffer }
+        }]
+    });
     
-    const linesProgram = createProgram(gl, lineVertexShader, lineFragmentShader);
-    if (!linesProgram) {
-        throw new Error('Failed to create line shader program');
-    }
+    const linesBindGroup = device.createBindGroup({
+        layout: bindGroupLayout,
+        entries: [{
+            binding: 0,
+            resource: { buffer: uniformBuffer }
+        }]
+    });
     
     return {
         ...state,
-        shaders: {
-            terrain: terrainProgram,
-            lines: linesProgram
+        pipelines: {
+            terrain: terrainPipeline,
+            lines: linePipeline
+        },
+        buffers: {
+            ...state.buffers,
+            uniform: uniformBuffer
+        },
+        bindGroups: {
+            terrain: terrainBindGroup,
+            lines: linesBindGroup
         }
     };
 };
@@ -876,7 +1032,10 @@ const handleClick = (state: GameState, event: MouseEvent): GameState => {
 const handleResize = (state: GameState): GameState => {
     state.canvas.width = window.innerWidth;
     state.canvas.height = window.innerHeight;
-    state.gl.viewport(0, 0, state.canvas.width, state.canvas.height);
+    
+    // WebGPU canvas context automatically handles viewport
+    // No explicit viewport call needed like WebGL
+    
     return state;
 };
 
@@ -908,75 +1067,94 @@ const restartGeologicalSimulation = (state: GameState): GameState => {
     };
 };
 
-// Rendering Functions (Side Effects)
+// WebGPU Rendering Functions
 const createTerrainMesh = (state: GameState): GameState => {
-    const { gl, terrain, mapSize, heightScale } = state;
+    const { device, heightmap, mapSize, heightScale, waterLevel } = state;
     
-    const vertices: number[] = [];
-    const colors: number[] = [];
+    const vertexData: number[] = [];
     const indices: number[] = [];
     
-    // Generate vertices and colors
+    // Generate vertices from heightmap
     for (let y = 0; y < mapSize; y++) {
         for (let x = 0; x < mapSize; x++) {
-            if (terrain[y] && terrain[y]![x]) {
-                const tile = terrain[y]![x]!;
-                
-                vertices.push(
-                    x - mapSize / 2,
-                    tile.geology.elevation * heightScale,
-                    y - mapSize / 2
-                );
-                
-                const elevation = tile.geology.elevation;
-                
-                if (elevation < 25) {
-                    colors.push(0.0, 1.0, 1.0); // Bright cyan
-                } else if (elevation < 35) {
-                    colors.push(0.0, 0.7, 1.0); // Electric blue
-                } else if (elevation < 45) {
-                    colors.push(0.0, 1.0, 0.0); // Bright neon green
-                } else if (elevation < 55) {
-                    colors.push(0.5, 1.0, 0.0); // Electric yellow-green
-                } else {
-                    colors.push(1.0, 0.0, 1.0); // Hot pink/magenta
-                }
+            const height = heightmap[y]![x]! * heightScale;
+            
+            // Position (centered around origin)
+            vertexData.push(
+                x - mapSize / 2,
+                height,
+                y - mapSize / 2
+            );
+            
+            // Color based on height (bright vaporwave aesthetic)
+            const heightFactor = height / 60;
+            
+            if (height < waterLevel * heightScale) {
+                // Underwater - bright blue (blue > 0.9 for water detection)
+                vertexData.push(0.3, 0.3, 1.0);
+            } else if (heightFactor < 0.3) {
+                // Low elevation - bright cyan (blue < 0.9 so not water)
+                vertexData.push(0.2, 1.0, 0.8);
+            } else if (heightFactor < 0.6) {
+                // Mid elevation - bright purple (blue < 0.9 so not water)
+                vertexData.push(0.8, 0.4, 0.8);
+            } else if (heightFactor < 0.8) {
+                // High elevation - bright pink (blue < 0.9 so not water)
+                vertexData.push(1.0, 0.6, 0.7);
+            } else {
+                // Peaks - bright magenta (blue < 0.9 so not water)
+                vertexData.push(1.0, 0.2, 0.8);
             }
         }
     }
     
-    // Generate indices
+    // Generate indices for triangles
     for (let y = 0; y < mapSize - 1; y++) {
         for (let x = 0; x < mapSize - 1; x++) {
             const topLeft = y * mapSize + x;
-            const topRight = y * mapSize + x + 1;
+            const topRight = topLeft + 1;
             const bottomLeft = (y + 1) * mapSize + x;
-            const bottomRight = (y + 1) * mapSize + x + 1;
+            const bottomRight = bottomLeft + 1;
             
+            // First triangle
             indices.push(topLeft, bottomLeft, topRight);
+            // Second triangle
             indices.push(topRight, bottomLeft, bottomRight);
         }
     }
     
-    // Create buffers
-    const vertexBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+    console.log('Terrain mesh created:');
+    console.log('- Vertices:', vertexData.length / 6, '(', vertexData.length, 'floats)');
+    console.log('- Indices:', indices.length / 3, 'triangles');
     
-    const colorBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
+    // Pad indices to multiple of 4 bytes if necessary
+    while ((indices.length * 2) % 4 !== 0) {
+        indices.push(0);
+    }
     
-    const indexBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+    // Create WebGPU buffers (ensure sizes are multiples of 4)
+    const vertexSize = Math.ceil((vertexData.length * 4) / 4) * 4;
+    const indexSize = Math.ceil((indices.length * 2) / 4) * 4;
+    
+    const vertexBuffer = device.createBuffer({
+        size: vertexSize,
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    });
+    
+    device.queue.writeBuffer(vertexBuffer, 0, new Float32Array(vertexData));
+    
+    const indexBuffer = device.createBuffer({
+        size: indexSize,
+        usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+    });
+    
+    device.queue.writeBuffer(indexBuffer, 0, new Uint16Array(indices));
     
     return {
         ...state,
         buffers: {
             ...state.buffers,
             vertex: vertexBuffer,
-            color: colorBuffer,
             index: indexBuffer
         }
     };
@@ -989,15 +1167,13 @@ const createWaterMesh = (state: GameState): GameState => {
             buffers: {
                 ...state.buffers,
                 waterVertex: null,
-                waterColor: null,
                 waterIndex: null
             }
         };
     }
     
-    const { gl, heightmap, mapSize, waterLevel } = state;
-    const waterVertices: number[] = [];
-    const waterColors: number[] = [];
+    const { device, heightmap, mapSize, waterLevel } = state;
+    const waterVertexData: number[] = [];
     const waterIndices: number[] = [];
     let vertexIndex = 0;
     
@@ -1011,16 +1187,19 @@ const createWaterMesh = (state: GameState): GameState => {
             ];
             
             if (corners.some(height => height < waterLevel)) {
+                const waterHeight = waterLevel * state.heightScale;
                 const positions = [
-                    [x - mapSize / 2, waterLevel, y - mapSize / 2],
-                    [x + 1 - mapSize / 2, waterLevel, y - mapSize / 2],
-                    [x - mapSize / 2, waterLevel, y + 1 - mapSize / 2],
-                    [x + 1 - mapSize / 2, waterLevel, y + 1 - mapSize / 2]
+                    [x - mapSize / 2, waterHeight, y - mapSize / 2],
+                    [x + 1 - mapSize / 2, waterHeight, y - mapSize / 2],
+                    [x - mapSize / 2, waterHeight, y + 1 - mapSize / 2],
+                    [x + 1 - mapSize / 2, waterHeight, y + 1 - mapSize / 2]
                 ];
                 
                 positions.forEach(pos => {
-                    waterVertices.push(pos[0]!, pos[1]!, pos[2]!);
-                    waterColors.push(0.0, 1.0, 1.0); // Bright cyan
+                    // Position
+                    waterVertexData.push(pos[0]!, pos[1]!, pos[2]!);
+                    // Color - translucent blue
+                    waterVertexData.push(0.2, 0.6, 1.0);
                 });
                 
                 waterIndices.push(
@@ -1033,25 +1212,26 @@ const createWaterMesh = (state: GameState): GameState => {
         }
     }
     
-    if (waterVertices.length > 0) {
-        const waterVertexBuffer = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, waterVertexBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(waterVertices), gl.STATIC_DRAW);
+    if (waterVertexData.length > 0) {
+        const waterVertexBuffer = device.createBuffer({
+            size: waterVertexData.length * 4,
+            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        });
         
-        const waterColorBuffer = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, waterColorBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(waterColors), gl.STATIC_DRAW);
+        device.queue.writeBuffer(waterVertexBuffer, 0, new Float32Array(waterVertexData));
         
-        const waterIndexBuffer = gl.createBuffer();
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, waterIndexBuffer);
-        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(waterIndices), gl.STATIC_DRAW);
+        const waterIndexBuffer = device.createBuffer({
+            size: waterIndices.length * 2,
+            usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+        });
+        
+        device.queue.writeBuffer(waterIndexBuffer, 0, new Uint16Array(waterIndices));
         
         return {
             ...state,
             buffers: {
                 ...state.buffers,
                 waterVertex: waterVertexBuffer,
-                waterColor: waterColorBuffer,
                 waterIndex: waterIndexBuffer
             }
         };
@@ -1070,11 +1250,12 @@ const createProjectionMatrix = (canvas: HTMLCanvasElement): Matrix4 => {
     const f = 1.0 / Math.tan(fov / 2);
     const rangeInv = 1 / (near - far);
     
+    // WebGPU uses column-major order
     return {
         elements: new Float32Array([
             f / aspect, 0, 0, 0,
             0, f, 0, 0,
-            0, 0, (near + far) * rangeInv, -1,
+            0, 0, (far + near) * rangeInv, -1,
             0, 0, near * far * rangeInv * 2, 0
         ])
     };
@@ -1104,59 +1285,106 @@ const createModelViewMatrix = (camera: GameState['camera']): Matrix4 => {
     };
 };
 
-// Render Function (Side Effects)
+// Sun Rendering Function  
+const renderSun = (_state: GameState, _passEncoder: any): void => {
+    // For now, we'll skip actual sun rendering to keep it simple
+    // The main feature is the lighting effect coming from the sun position
+    // In a future version, we could render a bright sphere or billboard here
+};
+
+// WebGPU Render Function
 const render = (state: GameState): void => {
-    const { gl, shaders, buffers, mapSize, canvas, camera } = state;
+    const { device, context, pipelines, buffers, bindGroups, canvas, camera } = state;
     
-    if (!shaders.terrain || !buffers.vertex || !buffers.color || !buffers.index) return;
+    if (!pipelines.terrain || !buffers.vertex || !buffers.index || !buffers.uniform || !bindGroups.terrain) {
+        console.warn('Missing required resources for rendering');
+        return;
+    }
     
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    
+    // Update uniform buffer with matrices and sun data
     const projectionMatrix = createProjectionMatrix(canvas);
     const modelViewMatrix = createModelViewMatrix(camera);
     
+    // Create uniform data: matrices + sun data
+    const uniformData = new Float32Array(80); // 2 * 16 floats for matrices + 16 floats for sun + padding
+    uniformData.set(modelViewMatrix.elements, 0);
+    uniformData.set(projectionMatrix.elements, 16);
+    
+    // Sun data starting at offset 32 (after two 4x4 matrices)
+    uniformData[32] = state.sun.position.x;
+    uniformData[33] = state.sun.position.y;
+    uniformData[34] = state.sun.position.z;
+    uniformData[35] = 0; // padding
+    
+    uniformData[36] = state.sun.color.x;
+    uniformData[37] = state.sun.color.y;
+    uniformData[38] = state.sun.color.z;
+    uniformData[39] = 0; // padding
+    
+    uniformData[40] = state.sun.intensity;
+    uniformData[41] = 0; // padding
+    uniformData[42] = 0; // padding
+    uniformData[43] = 0; // padding
+    
+    device.queue.writeBuffer(buffers.uniform, 0, uniformData);
+    
+    // Create depth texture
+    const depthTexture = device.createTexture({
+        size: [canvas.width, canvas.height],
+        format: 'depth24plus',
+        usage: GPUTextureUsage.RENDER_ATTACHMENT
+    });
+    
+    // Begin render pass
+    const commandEncoder = device.createCommandEncoder();
+    const renderPassDescriptor: GPURenderPassDescriptor = {
+        colorAttachments: [{
+            view: context.getCurrentTexture().createView(),
+            clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
+            loadOp: 'clear',
+            storeOp: 'store'
+        }],
+        depthStencilAttachment: {
+            view: depthTexture.createView(),
+            depthClearValue: 1.0,
+            depthLoadOp: 'clear',
+            depthStoreOp: 'store'
+        }
+    };
+    
+    const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
+    
     // Render terrain
-    gl.useProgram(shaders.terrain);
+    passEncoder.setPipeline(pipelines.terrain);
+    passEncoder.setBindGroup(0, bindGroups.terrain);
+    passEncoder.setVertexBuffer(0, buffers.vertex);
+    passEncoder.setIndexBuffer(buffers.index, 'uint16');
     
-    const projMatrixLocation = gl.getUniformLocation(shaders.terrain, 'u_projectionMatrix');
-    const mvMatrixLocation = gl.getUniformLocation(shaders.terrain, 'u_modelViewMatrix');
+    // Calculate index count for terrain mesh
+    const terrainIndexCount = (state.mapSize - 1) * (state.mapSize - 1) * 6;
+    passEncoder.drawIndexed(terrainIndexCount);
     
-    gl.uniformMatrix4fv(projMatrixLocation, false, projectionMatrix.elements);
-    gl.uniformMatrix4fv(mvMatrixLocation, false, modelViewMatrix.elements);
-    
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.vertex);
-    const positionLocation = gl.getAttribLocation(shaders.terrain, 'a_position');
-    gl.enableVertexAttribArray(positionLocation);
-    gl.vertexAttribPointer(positionLocation, 3, gl.FLOAT, false, 0, 0);
-    
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.color);
-    const colorLocation = gl.getAttribLocation(shaders.terrain, 'a_color');
-    gl.enableVertexAttribArray(colorLocation);
-    gl.vertexAttribPointer(colorLocation, 3, gl.FLOAT, false, 0, 0);
-    
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.index);
-    const indexCount = (mapSize - 1) * (mapSize - 1) * 6;
-    
-    gl.lineWidth(2.5);
-    for (let i = 0; i < indexCount; i += 3) {
-        gl.drawElements(gl.LINE_LOOP, 3, gl.UNSIGNED_SHORT, i * 2);
-    }
-    
-    // Render water
-    if (buffers.waterVertex && buffers.waterColor && buffers.waterIndex) {
-        gl.bindBuffer(gl.ARRAY_BUFFER, buffers.waterVertex);
-        gl.enableVertexAttribArray(positionLocation);
-        gl.vertexAttribPointer(positionLocation, 3, gl.FLOAT, false, 0, 0);
+    // Render water if available
+    if (buffers.waterVertex && buffers.waterIndex) {
+        passEncoder.setVertexBuffer(0, buffers.waterVertex);
+        passEncoder.setIndexBuffer(buffers.waterIndex, 'uint16');
         
-        gl.bindBuffer(gl.ARRAY_BUFFER, buffers.waterColor);
-        gl.enableVertexAttribArray(colorLocation);
-        gl.vertexAttribPointer(colorLocation, 3, gl.FLOAT, false, 0, 0);
-        
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.waterIndex);
-        const waterBufferSize = gl.getBufferParameter(gl.ELEMENT_ARRAY_BUFFER, gl.BUFFER_SIZE);
+        // Calculate water index count dynamically
+        const waterBufferSize = buffers.waterIndex.size;
         const waterIndexCount = waterBufferSize / 2;
-        gl.drawElements(gl.TRIANGLES, waterIndexCount, gl.UNSIGNED_SHORT, 0);
+        passEncoder.drawIndexed(waterIndexCount);
     }
+    
+    // Render the sun as a bright sphere
+    renderSun(state, passEncoder);
+    
+    passEncoder.end();
+    
+    // Submit commands
+    device.queue.submit([commandEncoder.finish()]);
+    
+    // Clean up depth texture
+    depthTexture.destroy();
 };
 
 // UI Update Functions (Side Effects)
@@ -1227,73 +1455,109 @@ const updateFPSDisplay = (state: GameState): void => {
 };
 
 // Main Game Function
-const createGame = (): void => {
-    let state = createInitialState();
-    
-    // Setup
-    setupWebGL(state);
-    state = initShaders(state);
-    state = generateTerrain(state);
-    state = createTerrainMesh(state);
-    state = createWaterMesh(state);
-    state = setupIsometricView(state);
-    
-    // Event listeners with closure over state
-    const setupEventListeners = () => {
-        window.addEventListener('resize', () => {
-            state = handleResize(state);
+const createGame = async (): Promise<void> => {
+    try {
+        // Initialize WebGPU and create initial state
+        let state = await createInitialState();
+        
+        // Setup rendering pipelines
+        state = createRenderPipelines(state);
+        
+        // Generate initial terrain
+        state = generateTerrain(state);
+        state = createTerrainMesh(state);
+        state = createWaterMesh(state);
+        state = setupIsometricView(state);
+        
+        // Event listeners with closure over state
+        const setupEventListeners = () => {
+            window.addEventListener('resize', () => {
+                state = handleResize(state);
+            });
+            
+            window.addEventListener('keydown', (e: KeyboardEvent) => {
+                state = handleKeyDown(state, e);
+            });
+            
+            window.addEventListener('keyup', (e: KeyboardEvent) => {
+                state = handleKeyUp(state, e);
+            });
+            
+            state.canvas.addEventListener('click', (e: MouseEvent) => {
+                state = handleClick(state, e);
+            });
+            
+            state.canvas.focus();
+        };
+        
+        setupEventListeners();
+        
+        // Game loop
+        const gameLoop = () => {
+            const previousStep = state.simulation.step;
+            
+            // Update state
+            state = pipe(
+                updateFPS,
+                updateGeologicalSimulation,
+                updateCameraFromInput
+            )(state);
+            
+            // Update terrain mesh if simulation step changed
+            if (state.simulation.step > previousStep) {
+                state = createTerrainMesh(state);
+                state = createWaterMesh(state);
+            }
+            
+            // Side effects
+            render(state);
+            updateFPSDisplay(state);
+            
+            requestAnimationFrame(gameLoop);
+        };
+        
+        console.log('Vibe City WebGPU 3D initialized');
+        console.log('WebGPU 3D Geological terrain loaded!');
+        console.log('Initial state:', {
+            device: !!state.device,
+            pipelines: {
+                terrain: !!state.pipelines.terrain,
+                lines: !!state.pipelines.lines
+            },
+            buffers: {
+                vertex: !!state.buffers.vertex,
+                index: !!state.buffers.index,
+                uniform: !!state.buffers.uniform
+            },
+            mapSize: state.mapSize,
+            heightScale: state.heightScale,
+            camera: state.camera,
+            sun: state.sun
         });
         
-        window.addEventListener('keydown', (e) => {
-            state = handleKeyDown(state, e);
-        });
+        gameLoop();
         
-        window.addEventListener('keyup', (e) => {
-            state = handleKeyUp(state, e);
-        });
+    } catch (error) {
+        console.error('Failed to initialize WebGPU game:', error);
         
-        state.canvas.addEventListener('click', (e) => {
-            state = handleClick(state, e);
-        });
-        
-        state.canvas.focus();
-    };
-    
-    setupEventListeners();
-    
-    // Game loop
-    const gameLoop = () => {
-        const previousStep = state.simulation.step;
-        
-        // Update state
-        state = pipe(
-            updateFPS,
-            updateGeologicalSimulation,
-            updateCameraFromInput
-        )(state);
-        
-        // Update terrain mesh if simulation step changed
-        if (state.simulation.step > previousStep) {
-            state = createTerrainMesh(state);
-            state = createWaterMesh(state);
+        // Fallback error message
+        const container = document.getElementById('three-container');
+        if (container) {
+            container.innerHTML = `
+                <div style="color: #ff0080; text-align: center; padding: 50px; font-family: monospace;">
+                    <h2>WebGPU Not Supported</h2>
+                    <p>This game requires WebGPU support.</p>
+                    <p>Please use a modern browser with WebGPU enabled.</p>
+                    <p>Error: ${error instanceof Error ? error.message : String(error)}</p>
+                </div>
+            `;
         }
-        
-        // Side effects
-        render(state);
-        updateFPSDisplay(state);
-        
-        requestAnimationFrame(gameLoop);
-    };
-    
-    console.log('Vibe City WebGL 3D initialized');
-    console.log('WebGL 3D Geological terrain with contours loaded!');
-    
-    gameLoop();
+    }
 };
 
 // Initialize on DOM ready
 document.addEventListener('DOMContentLoaded', () => {
-    createGame();
+    createGame().catch(console.error);
 });
 
 // Export types and functions for testing (only in module environments)
