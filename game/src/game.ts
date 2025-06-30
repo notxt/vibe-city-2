@@ -13,6 +13,37 @@ enum BedrockType {
     SHALE = 'shale'
 }
 
+enum ResourceType {
+    // Water sources
+    SPRING = 'spring',
+    RIVER = 'river',
+    SEASONAL_STREAM = 'seasonal_stream',
+    
+    // Food sources
+    BERRIES = 'berries',
+    NUTS = 'nuts',
+    EDIBLE_PLANTS = 'edible_plants',
+    GAME_TRAIL = 'game_trail',
+    
+    // Materials
+    FLINT = 'flint',
+    OBSIDIAN = 'obsidian',
+    CLAY_DEPOSIT = 'clay_deposit',
+    HARDWOOD = 'hardwood',
+    SOFTWOOD = 'softwood',
+    
+    // Shelter
+    CAVE = 'cave',
+    ROCK_SHELTER = 'rock_shelter'
+}
+
+interface Resource {
+    type: ResourceType;
+    abundance: number; // 0-1 (0 = scarce, 1 = abundant)
+    seasonal: boolean; // Does this resource vary by season?
+    accessibility: number; // 0-1 (0 = hard to access, 1 = easy)
+}
+
 interface GeologyData {
     elevation: number;        // 0-100 (meters above sea level)
     soilType: SoilType;
@@ -29,6 +60,7 @@ interface TerrainTile {
     y: number;
     geology: GeologyData;
     buildable: boolean;
+    resources: Resource[];
     building?: any; // Will define building types later
 }
 
@@ -697,6 +729,329 @@ const smoothEdges = (heightmap: number[][], mapSize: number): number[][] => {
     return result;
 };
 
+// River Generation Functions (Pure)
+const generateRivers = (terrain: TerrainTile[][], mapSize: number): TerrainTile[][] => {
+    const updatedTerrain = terrain.map(row => row.map(tile => ({ ...tile, resources: [...tile.resources] })));
+    
+    // Find high elevation starting points for rivers
+    const riverSources: Array<{x: number, y: number, elevation: number}> = [];
+    
+    for (let y = 0; y < mapSize; y++) {
+        for (let x = 0; x < mapSize; x++) {
+            const tile = terrain[y]![x]!;
+            // Rivers start from high elevation areas with springs or high water table
+            if (tile.geology.elevation > 60 && 
+                (tile.geology.waterTableDepth < 2.0 || 
+                 tile.resources.some(r => r.type === ResourceType.SPRING))) {
+                riverSources.push({x, y, elevation: tile.geology.elevation});
+            }
+        }
+    }
+    
+    // Generate river paths from each source
+    for (const source of riverSources) {
+        let currentX = source.x;
+        let currentY = source.y;
+        let currentElevation = source.elevation;
+        const visited = new Set<string>();
+        
+        // Follow steepest descent to create river path
+        while (true) {
+            const key = `${currentX},${currentY}`;
+            if (visited.has(key)) break;
+            visited.add(key);
+            
+            // Add river resource to current tile if not already present
+            const currentTile = updatedTerrain[currentY]![currentX]!;
+            if (!currentTile.resources.some(r => r.type === ResourceType.RIVER)) {
+                currentTile.resources.push({
+                    type: ResourceType.RIVER,
+                    abundance: 0.9,
+                    seasonal: false,
+                    accessibility: 0.95
+                });
+            }
+            
+            // Find the steepest descent neighbor
+            let steepestX = currentX;
+            let steepestY = currentY;
+            let steepestElevation = currentElevation;
+            
+            for (let dy = -1; dy <= 1; dy++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                    if (dx === 0 && dy === 0) continue;
+                    
+                    const newX = currentX + dx;
+                    const newY = currentY + dy;
+                    
+                    if (newX >= 0 && newX < mapSize && newY >= 0 && newY < mapSize) {
+                        const neighborElevation = terrain[newY]![newX]!.geology.elevation;
+                        if (neighborElevation < steepestElevation) {
+                            steepestX = newX;
+                            steepestY = newY;
+                            steepestElevation = neighborElevation;
+                        }
+                    }
+                }
+            }
+            
+            // If no lower neighbor found, river ends (reaches local minimum or edge)
+            if (steepestX === currentX && steepestY === currentY) {
+                break;
+            }
+            
+            // If river reaches very low elevation (near water level), it ends
+            if (steepestElevation < 15) {
+                break;
+            }
+            
+            currentX = steepestX;
+            currentY = steepestY;
+            currentElevation = steepestElevation;
+        }
+    }
+    
+    return updatedTerrain;
+};
+
+// Resource Generation Functions (Pure)
+const generateResources = (geology: GeologyData, x: number, y: number): Resource[] => {
+    const resources: Resource[] = [];
+    const random = (seed: number) => (Math.sin(seed * 12.9898 + 78.233) % 1 + 1) / 2;
+    
+    // Water sources based on water table depth and elevation
+    if (geology.waterTableDepth < 1.0) {
+        resources.push({
+            type: ResourceType.SPRING,
+            abundance: 1.0 - geology.waterTableDepth,
+            seasonal: false,
+            accessibility: geology.stability
+        });
+    }
+    
+    // Rivers in low elevation areas with good drainage
+    if (geology.elevation < 30 && geology.drainage > 0.7) {
+        resources.push({
+            type: ResourceType.RIVER,
+            abundance: 0.8,
+            seasonal: false,
+            accessibility: 0.9
+        });
+    }
+    
+    // Seasonal streams in medium elevation with moderate drainage
+    if (geology.elevation > 20 && geology.elevation < 60 && geology.drainage > 0.4) {
+        resources.push({
+            type: ResourceType.SEASONAL_STREAM,
+            abundance: 0.6,
+            seasonal: true,
+            accessibility: 0.7
+        });
+    }
+    
+    // Food sources based on vegetation zones (elevation and moisture)
+    const moistureLevel = 1.0 - (geology.waterTableDepth / 10.0); // Higher water table = more moisture
+    const hasNearbyWater = resources.some(r => 
+        r.type === ResourceType.SPRING || 
+        r.type === ResourceType.RIVER || 
+        r.type === ResourceType.SEASONAL_STREAM
+    );
+    
+    // Lowland vegetation zone (0-30m elevation, high moisture)
+    if (geology.elevation < 30 && geology.soilType !== SoilType.ROCK) {
+        const berryChance = random(x * 100 + y * 200 + 1);
+        const moistureBonus = hasNearbyWater ? 0.3 : moistureLevel * 0.2;
+        
+        if (berryChance > (0.6 - moistureBonus)) {
+            resources.push({
+                type: ResourceType.BERRIES,
+                abundance: Math.min(0.9, 0.5 + moistureLevel * 0.4),
+                seasonal: true,
+                accessibility: 0.9
+            });
+        }
+        
+        // Edible plants thrive in moist lowlands
+        const plantChance = random(x * 80 + y * 180 + 10);
+        if (plantChance > (0.7 - moistureBonus)) {
+            resources.push({
+                type: ResourceType.EDIBLE_PLANTS,
+                abundance: Math.min(0.8, 0.4 + moistureLevel * 0.4),
+                seasonal: true,
+                accessibility: 0.95
+            });
+        }
+    }
+    
+    // Highland vegetation zone (30-60m elevation, mixed moisture)
+    else if (geology.elevation >= 30 && geology.elevation < 60 && geology.soilType !== SoilType.ROCK) {
+        const nutChance = random(x * 150 + y * 250 + 2);
+        const elevationBonus = (geology.elevation - 30) / 30 * 0.2; // Higher elevation = better nuts
+        
+        if (nutChance > (0.7 - elevationBonus)) {
+            resources.push({
+                type: ResourceType.NUTS,
+                abundance: Math.min(0.8, 0.5 + elevationBonus),
+                seasonal: true,
+                accessibility: 0.8
+            });
+        }
+        
+        // Berries still possible in highlands with good moisture
+        if (moistureLevel > 0.4) {
+            const berryChance = random(x * 100 + y * 200 + 1);
+            if (berryChance > 0.8) {
+                resources.push({
+                    type: ResourceType.BERRIES,
+                    abundance: 0.6,
+                    seasonal: true,
+                    accessibility: 0.8
+                });
+            }
+        }
+    }
+    
+    // Alpine zone (60m+ elevation, low moisture, specialized resources)
+    else if (geology.elevation >= 60 && geology.soilType !== SoilType.ROCK) {
+        // Only hardy, specialized plants survive at high elevation
+        const alpinePlantChance = random(x * 300 + y * 400 + 11);
+        if (alpinePlantChance > 0.85) {
+            resources.push({
+                type: ResourceType.EDIBLE_PLANTS,
+                abundance: 0.3, // Scarce but high quality
+                seasonal: true,
+                accessibility: 0.6 // Harder to access
+            });
+        }
+    }
+    
+    // Game trails in medium elevation areas with good access
+    if (geology.elevation > 10 && geology.elevation < 70 && geology.stability > 0.6) {
+        const gameChance = random(x * 80 + y * 120 + 3);
+        if (gameChance > 0.75) {
+            resources.push({
+                type: ResourceType.GAME_TRAIL,
+                abundance: 0.6,
+                seasonal: false,
+                accessibility: geology.stability
+            });
+        }
+    }
+    
+    // Material resources based on bedrock and soil
+    if (geology.bedrockType === BedrockType.LIMESTONE) {
+        const flintChance = random(x * 200 + y * 300 + 4);
+        if (flintChance > 0.85) {
+            resources.push({
+                type: ResourceType.FLINT,
+                abundance: 0.7,
+                seasonal: false,
+                accessibility: 1.0 - geology.excavationCost / 5.0
+            });
+        }
+    }
+    
+    if (geology.bedrockType === BedrockType.GRANITE && geology.elevation > 50) {
+        const obsidianChance = random(x * 250 + y * 350 + 5);
+        if (obsidianChance > 0.9) {
+            resources.push({
+                type: ResourceType.OBSIDIAN,
+                abundance: 0.9,
+                seasonal: false,
+                accessibility: 0.3 // Very hard to access
+            });
+        }
+    }
+    
+    // Clay deposits in clay soil with high water table
+    if (geology.soilType === SoilType.CLAY && geology.waterTableDepth < 3.0) {
+        resources.push({
+            type: ResourceType.CLAY_DEPOSIT,
+            abundance: 0.8,
+            seasonal: false,
+            accessibility: 1.0 - geology.excavationCost / 5.0
+        });
+    }
+    
+    // Wood resources based on vegetation zones
+    if (geology.soilType !== SoilType.ROCK) {
+        // Hardwood forests in lowlands with good soil and moisture
+        if (geology.elevation < 40 && geology.soilType === SoilType.LOAM && moistureLevel > 0.5) {
+            const hardwoodChance = random(x * 180 + y * 280 + 6);
+            const forestBonus = hasNearbyWater ? 0.2 : 0;
+            
+            if (hardwoodChance > (0.5 - forestBonus)) {
+                resources.push({
+                    type: ResourceType.HARDWOOD,
+                    abundance: Math.min(0.9, 0.6 + moistureLevel * 0.3),
+                    seasonal: false,
+                    accessibility: 0.8
+                });
+            }
+        }
+        
+        // Softwood (coniferous) forests in highlands and areas with poor soil
+        if (geology.elevation > 25 && geology.elevation < 80) {
+            const softwoodChance = random(x * 220 + y * 320 + 7);
+            const elevationBonus = geology.elevation > 50 ? 0.2 : 0; // Conifers prefer higher elevation
+            
+            if (softwoodChance > (0.6 - elevationBonus)) {
+                resources.push({
+                    type: ResourceType.SOFTWOOD,
+                    abundance: geology.elevation > 50 ? 0.8 : 0.6,
+                    seasonal: false,
+                    accessibility: geology.elevation > 60 ? 0.7 : 0.9 // Harder to access at high elevation
+                });
+            }
+        }
+        
+        // Mixed forests in mid-elevation areas with moderate conditions
+        if (geology.elevation >= 20 && geology.elevation <= 45 && moistureLevel > 0.3) {
+            const mixedChance = random(x * 250 + y * 350 + 12);
+            if (mixedChance > 0.7) {
+                // Add both types but with lower abundance
+                resources.push({
+                    type: ResourceType.HARDWOOD,
+                    abundance: 0.5,
+                    seasonal: false,
+                    accessibility: 0.8
+                });
+                resources.push({
+                    type: ResourceType.SOFTWOOD,
+                    abundance: 0.5,
+                    seasonal: false,
+                    accessibility: 0.9
+                });
+            }
+        }
+    }
+    
+    // Shelter based on bedrock and elevation
+    if (geology.elevation > 30 && geology.bedrockType !== BedrockType.SHALE) {
+        const caveChance = random(x * 300 + y * 400 + 8);
+        if (caveChance > 0.92) {
+            resources.push({
+                type: ResourceType.CAVE,
+                abundance: 1.0,
+                seasonal: false,
+                accessibility: 0.6
+            });
+        }
+        
+        const shelterChance = random(x * 350 + y * 450 + 9);
+        if (shelterChance > 0.85) {
+            resources.push({
+                type: ResourceType.ROCK_SHELTER,
+                abundance: 0.8,
+                seasonal: false,
+                accessibility: 0.8
+            });
+        }
+    }
+    
+    return resources;
+};
+
 // Terrain Creation Functions (Pure)
 const createTileFromHeight = (x: number, y: number, elevation: number): TerrainTile => {
     elevation = Math.max(5, Math.min(150, elevation));
@@ -726,11 +1081,14 @@ const createTileFromHeight = (x: number, y: number, elevation: number): TerrainT
         excavationCost: soilType === SoilType.ROCK ? 4 : soilType === SoilType.CLAY ? 2 : 1.5
     };
 
+    const resources = generateResources(geology, x, y);
+    
     return {
         x,
         y,
         geology,
-        buildable: elevation < 50 && geology.waterTableDepth > 0.5
+        buildable: elevation < 50 && geology.waterTableDepth > 0.5,
+        resources
     };
 };
 
@@ -744,7 +1102,10 @@ const heightmapToTerrain = (heightmap: number[][], mapSize: number): TerrainTile
         }
     }
     
-    return terrain;
+    // Generate rivers that flow from high to low elevation
+    const terrainWithRivers = generateRivers(terrain, mapSize);
+    
+    return terrainWithRivers;
 };
 
 // Simulation Update Functions (Pure)
@@ -1067,9 +1428,71 @@ const restartGeologicalSimulation = (state: GameState): GameState => {
     };
 };
 
+// Resource Visualization Functions
+const getResourceColor = (tile: TerrainTile): [number, number, number] => {
+    const { resources } = tile;
+    
+    // Priority order: Water > Vegetation > Materials > Shelter > Base terrain
+    
+    // Water resources - use water/blue colors
+    if (resources.some(r => r.type === ResourceType.RIVER)) {
+        return [0.1, 0.6, 1.0]; // Bright blue for rivers
+    }
+    if (resources.some(r => r.type === ResourceType.SPRING)) {
+        return [0.4, 0.8, 1.0]; // Light blue for springs
+    }
+    if (resources.some(r => r.type === ResourceType.SEASONAL_STREAM)) {
+        return [0.6, 0.9, 1.0]; // Very light blue for seasonal streams
+    }
+    
+    // Vegetation resources - use cyan/green colors
+    if (resources.some(r => r.type === ResourceType.BERRIES)) {
+        return [0.2, 1.0, 0.6]; // Bright cyan-green for berries
+    }
+    if (resources.some(r => r.type === ResourceType.NUTS)) {
+        return [0.4, 1.0, 0.7]; // Light cyan-green for nuts
+    }
+    if (resources.some(r => r.type === ResourceType.EDIBLE_PLANTS)) {
+        return [0.1, 0.9, 0.5]; // Darker cyan-green for edible plants
+    }
+    if (resources.some(r => r.type === ResourceType.HARDWOOD)) {
+        return [0.0, 0.8, 0.4]; // Dark green for hardwood
+    }
+    if (resources.some(r => r.type === ResourceType.SOFTWOOD)) {
+        return [0.2, 0.9, 0.6]; // Medium green for softwood
+    }
+    
+    // Material resources - use distinct colors
+    if (resources.some(r => r.type === ResourceType.OBSIDIAN)) {
+        return [0.2, 0.2, 0.3]; // Dark grey-blue for obsidian
+    }
+    if (resources.some(r => r.type === ResourceType.FLINT)) {
+        return [0.7, 0.7, 0.5]; // Tan/beige for flint
+    }
+    if (resources.some(r => r.type === ResourceType.CLAY_DEPOSIT)) {
+        return [0.8, 0.5, 0.3]; // Orange-brown for clay
+    }
+    
+    // Shelter resources - use warm colors
+    if (resources.some(r => r.type === ResourceType.CAVE)) {
+        return [0.6, 0.4, 0.2]; // Dark brown for caves
+    }
+    if (resources.some(r => r.type === ResourceType.ROCK_SHELTER)) {
+        return [0.7, 0.6, 0.4]; // Light brown for rock shelters
+    }
+    
+    // Game trails - use yellow
+    if (resources.some(r => r.type === ResourceType.GAME_TRAIL)) {
+        return [1.0, 0.9, 0.3]; // Bright yellow for game trails
+    }
+    
+    // Base terrain color (no resources) - neutral grey
+    return [0.6, 0.6, 0.6]; // Neutral grey for areas without resources
+};
+
 // WebGPU Rendering Functions
 const createTerrainMesh = (state: GameState): GameState => {
-    const { device, heightmap, mapSize, heightScale, waterLevel } = state;
+    const { device, heightmap, terrain, mapSize, heightScale, waterLevel } = state;
     
     const vertexData: number[] = [];
     const indices: number[] = [];
@@ -1086,24 +1509,15 @@ const createTerrainMesh = (state: GameState): GameState => {
                 y - mapSize / 2
             );
             
-            // Color based on height (bright vaporwave aesthetic)
-            const heightFactor = height / 60;
-            
+            // Color based on resources and terrain
             if (height < waterLevel * heightScale) {
                 // Underwater - bright blue (blue > 0.9 for water detection)
                 vertexData.push(0.3, 0.3, 1.0);
-            } else if (heightFactor < 0.3) {
-                // Low elevation - bright cyan (blue < 0.9 so not water)
-                vertexData.push(0.2, 1.0, 0.8);
-            } else if (heightFactor < 0.6) {
-                // Mid elevation - bright purple (blue < 0.9 so not water)
-                vertexData.push(0.8, 0.4, 0.8);
-            } else if (heightFactor < 0.8) {
-                // High elevation - bright pink (blue < 0.9 so not water)
-                vertexData.push(1.0, 0.6, 0.7);
             } else {
-                // Peaks - bright magenta (blue < 0.9 so not water)
-                vertexData.push(1.0, 0.2, 0.8);
+                // Get color based on resources and terrain
+                const tile = terrain[y]![x]!;
+                const [r, g, b] = getResourceColor(tile);
+                vertexData.push(r, g, b);
             }
         }
     }
